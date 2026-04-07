@@ -6,6 +6,9 @@ export const useVision = () => {
 
   const [ready, setReady] = useState(false);
 
+  // 🔥 STORE PREVIOUS FRAME FOR SMOOTHING
+  const prevObstaclesRef = useRef<{ x: number; z: number }[]>([]);
+
   useEffect(() => {
     const initCamera = async () => {
       try {
@@ -35,7 +38,7 @@ export const useVision = () => {
     initCamera();
   }, []);
 
-  // 🔥 SIMPLE OBSTACLE DETECTION
+  // 🔥 IMPROVED OBSTACLE DETECTION WITH SMOOTHING
   const getObstacles = () => {
     if (!videoRef.current || !canvasRef.current || !ready) return [];
 
@@ -44,40 +47,58 @@ export const useVision = () => {
 
     ctx.drawImage(videoRef.current, 0, 0);
 
-    const imageData = ctx.getImageData(
-      0,
-      0,
-      canvasRef.current.width,
-      canvasRef.current.height
-    );
+    const { width, height } = canvasRef.current;
 
+    const imageData = ctx.getImageData(0, 0, width, height);
     const data = imageData.data;
 
-    const obstacles = [];
+    const newObstacles: { x: number; z: number }[] = [];
 
-    // 🔥 SAMPLE PIXELS (LIGHTWEIGHT)
-    for (let i = 0; i < data.length; i += 5000) {
+    // 🔥 BETTER SAMPLING (LESS NOISE)
+    for (let i = 0; i < data.length; i += 20000) {
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
 
       const brightness = (r + g + b) / 3;
 
-      // Dark = obstacle
       if (brightness < 60) {
         const index = i / 4;
-        const x = index % canvasRef.current.width;
-        const y = Math.floor(index / canvasRef.current.width);
+        const x = index % width;
+        const y = Math.floor(index / width);
 
-        // Convert to world space (approx)
-        const worldX = (x / canvasRef.current.width - 0.5) * 10;
-        const worldZ = (y / canvasRef.current.height - 0.5) * -10;
+        // 🔥 FOCUS: CENTER + LOWER HALF (WHERE FLOOR IS)
+        if (
+          x > width * 0.3 &&
+          x < width * 0.7 &&
+          y > height * 0.4
+        ) {
+          const worldX = (x / width - 0.5) * 5;
+          const worldZ = (y / height) * -6;
 
-        obstacles.push({ x: worldX, z: worldZ });
+          newObstacles.push({ x: worldX, z: worldZ });
+        }
       }
     }
 
-    return obstacles.slice(0, 10); // limit
+    // 🔥 LIMIT COUNT
+    const limited = newObstacles.slice(0, 5);
+
+    // 🔥 TEMPORAL SMOOTHING
+    const smoothed = limited.map((obs, i) => {
+      const prev = prevObstaclesRef.current[i];
+
+      if (!prev) return obs;
+
+      return {
+        x: prev.x * 0.7 + obs.x * 0.3,
+        z: prev.z * 0.7 + obs.z * 0.3,
+      };
+    });
+
+    prevObstaclesRef.current = smoothed;
+
+    return smoothed;
   };
 
   return {
