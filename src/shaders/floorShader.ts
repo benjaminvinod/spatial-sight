@@ -3,8 +3,8 @@ import * as THREE from 'three';
 export const FloorShader = {
   uniforms: {
     uTime: { value: 0 },
-    uColor: { value: new THREE.Color(0x004444) }, // Deep Teal
-    uGridColor: { value: new THREE.Color(0x00ffff) }, // Neon Cyan
+    uColor: { value: new THREE.Color(0x050505) }, // Darker base for better contrast
+    uGridColor: { value: new THREE.Color(0x00ffff) },
   },
   vertexShader: `
     varying vec2 vUv;
@@ -23,20 +23,20 @@ export const FloorShader = {
     varying vec3 vPosition;
 
     void main() {
-      // Create a moving grid effect
-      vec2 grid = abs(fract(vUv * 20.0 - 0.5) - 0.5) / fwidth(vUv * 20.0);
+      // Clean grid calculation
+      vec2 grid = abs(fract(vUv * 50.0 - 0.5) - 0.5);
       float line = min(grid.x, grid.y);
-      float gridLine = 1.0 - min(line, 1.0);
+      float gridLine = smoothstep(0.02, 0.0, line);
 
-      // Add a subtle radial gradient so the floor fades out in the distance
+      // Fade floor in distance (radial mask)
       float dist = distance(vUv, vec2(0.5));
-      float mask = smoothstep(0.5, 0.2, dist);
+      float mask = smoothstep(0.5, 0.0, dist);
 
-      // Add a pulsing wave effect
-      float wave = sin(vPosition.x * 2.0 + uTime * 2.0) * 0.5 + 0.5;
+      // Subtle pulse to show the app is "Alive"
+      float pulse = 0.1 + 0.05 * sin(uTime);
       
-      vec3 finalColor = mix(uColor, uGridColor, gridLine * 0.5);
-      gl_FragColor = vec4(finalColor, mask * (0.2 + wave * 0.1));
+      vec3 finalColor = mix(uColor, uGridColor, gridLine * 0.3);
+      gl_FragColor = vec4(finalColor, mask * pulse);
     }
   `
 };

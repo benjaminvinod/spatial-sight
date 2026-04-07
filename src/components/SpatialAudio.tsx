@@ -1,10 +1,8 @@
 import * as THREE from 'three';
 
-// Global Audio Context (Singleton pattern)
 let audioCtx: AudioContext | null = null;
 
-export const playSpatialAlert = (position: THREE.Vector3, duration: number = 0.1) => {
-  // Initialize context on first interaction (required by browsers)
+export const initAudio = () => {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
   }
@@ -12,31 +10,36 @@ export const playSpatialAlert = (position: THREE.Vector3, duration: number = 0.1
   if (audioCtx.state === 'suspended') {
     audioCtx.resume();
   }
+};
 
-  const oscillator = audioCtx.createOscillator();
-  const gainNode = audioCtx.createGain();
+export const playSpatialAlert = (
+  position: THREE.Vector3,
+  duration = 0.2,
+  isDanger = false
+) => {
+  if (!audioCtx) return;
+
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
   const panner = audioCtx.createPanner();
 
-  // Spatial Settings
-  panner.panningModel = 'HRTF'; // High-Quality 3D Sound
-  panner.distanceModel = 'inverse';
-  panner.positionX.setValueAtTime(position.x, audioCtx.currentTime);
-  panner.positionY.setValueAtTime(position.y, audioCtx.currentTime);
-  panner.positionZ.setValueAtTime(position.z, audioCtx.currentTime);
+  panner.panningModel = 'HRTF';
 
-  // Sound Quality (High-pitched 'ping' for floor, lower 'thud' for walls)
-  oscillator.type = 'sine';
-  oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+  panner.positionX.value = position.x;
+  panner.positionY.value = position.y;
+  panner.positionZ.value = position.z;
 
-  // Volume Envelope (prevents clicking sounds)
-  gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-  gainNode.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.01);
-  gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+  osc.type = isDanger ? 'square' : 'sine';
+  osc.frequency.value = isDanger ? 220 : 880;
 
-  oscillator.connect(gainNode);
-  gainNode.connect(panner);
+  gain.gain.setValueAtTime(0, audioCtx.currentTime);
+  gain.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+
+  osc.connect(gain);
+  gain.connect(panner);
   panner.connect(audioCtx.destination);
 
-  oscillator.start();
-  oscillator.stop(audioCtx.currentTime + duration);
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
 };

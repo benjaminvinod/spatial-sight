@@ -1,138 +1,217 @@
-import { useState, useRef, useMemo, useEffect } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { createXRStore, XR, XROrigin, useXRHitTest } from '@react-three/xr';
+import { useState, useRef, useEffect } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { PathShader } from '../shaders/PathShader';
-import { playSpatialAlert } from './SpatialAudio';
 
-// 1. Setup the XR Store
-const store = createXRStore({
-  hitTest: {
-    space: 'viewer',
-  },
-});
+interface PathNode {
+  pos: THREE.Vector3;
+  isDanger: boolean;
+}
 
-const GlowingPath = ({ position }: { position: THREE.Vector3 }) => {
-  const meshRef = useRef<THREE.Mesh>(null!);
-  
-  useFrame((state) => {
-    if (meshRef.current) {
-      const material = meshRef.current.material as THREE.ShaderMaterial;
-      if (material.uniforms?.uTime) {
-        material.uniforms.uTime.value = state.clock.getElapsedTime();
-      }
-    }
-  });
-
+const GlowingPath = ({ position, isDanger }: any) => {
   return (
-    <mesh ref={meshRef} position={position} rotation={[-Math.PI / 2, 0, 0]}>
-      <planeGeometry args={[0.4, 0.4]} />
-      <shaderMaterial 
-        args={[PathShader]} 
-        transparent={true} 
-        blending={THREE.AdditiveBlending}
-        depthWrite={false}
-      />
+    <mesh position={position} rotation={[-Math.PI / 2, 0, 0]}>
+      <planeGeometry args={[1, 1]} />
+      <meshBasicMaterial color={isDanger ? 'red' : 'cyan'} />
     </mesh>
   );
 };
 
-const SceneContent = () => {
-  const [nodes, setNodes] = useState<THREE.Vector3[]>([]);
-  const lastPathPos = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
-  const matrix = useMemo(() => new THREE.Matrix4(), []);
+const DestinationMarker = ({ position }: any) => {
+  return (
+    <mesh position={position}>
+      <sphereGeometry args={[0.5, 32, 32]} />
+      <meshStandardMaterial color="lime" emissive="green" />
+    </mesh>
+  );
+};
 
-  // Correct implementation for v6 hit testing
-  useXRHitTest((results, getWorldMatrix) => {
-    if (results.length > 0) {
-      const hit = results[0];
-      getWorldMatrix(matrix, hit);
+const Scene = ({ setDirection }: any) => {
+  const [nodes, setNodes] = useState<PathNode[]>([]);
+  const [destination, setDestination] = useState<THREE.Vector3 | null>(null);
 
-      const currentPos = new THREE.Vector3();
-      currentPos.setFromMatrixPosition(matrix);
+  const { camera, gl } = useThree();
 
-      if (currentPos.distanceTo(lastPathPos.current) > 0.5) {
-        setNodes((prev) => [...prev.slice(-14), currentPos.clone()]);
-        lastPathPos.current.copy(currentPos);
-        playSpatialAlert(currentPos, 0.1); 
+  const playerPos = useRef(new THREE.Vector3(0, 0, 0));
+  const keys = useRef<{ [key: string]: boolean }>({});
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => (keys.current[e.key.toLowerCase()] = true);
+    const up = (e: KeyboardEvent) => (keys.current[e.key.toLowerCase()] = false);
+
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
+  }, []);
+
+  useFrame(() => {
+    const speed = 0.08;
+
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.y = 0;
+    forward.normalize();
+
+    const right = new THREE.Vector3();
+    right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+    if (keys.current['w']) playerPos.current.add(forward.clone().multiplyScalar(speed));
+    if (keys.current['s']) playerPos.current.add(forward.clone().multiplyScalar(-speed));
+    if (keys.current['a']) playerPos.current.add(right.clone().multiplyScalar(-speed));
+    if (keys.current['d']) playerPos.current.add(right.clone().multiplyScalar(speed));
+
+    camera.position.x = playerPos.current.x;
+    camera.position.z = playerPos.current.z;
+
+    if (destination) {
+      const toTarget = destination.clone().sub(playerPos.current);
+      const cross = new THREE.Vector3().crossVectors(forward, toTarget);
+
+      if (toTarget.length() < 0.5) {
+        setDirection('Destination Reached');
+        setNodes([]);
+      } else if (cross.y > 0.2) {
+        setDirection('Turn Left');
+      } else if (cross.y < -0.2) {
+        setDirection('Turn Right');
+      } else {
+        setDirection('Move Forward');
       }
     }
-  }, 'viewer');
+  });
+
+  const obstacles = [
+    new THREE.Vector3(2, 0, -2),
+    new THREE.Vector3(-2, 0, -3),
+    new THREE.Vector3(1, 0, -5),
+  ];
+
+  const generatePath = (target: THREE.Vector3) => {
+    setDestination(target);
+
+    const newNodes: PathNode[] = [];
+    let current = playerPos.current.clone();
+    const stepSize = 0.5;
+
+    for (let i = 0; i < 100; i++) {
+      const toTarget = target.clone().sub(current);
+      if (toTarget.length() < 0.5) break;
+
+      let direction = toTarget.normalize();
+
+      for (let obs of obstacles) {
+        if (current.distanceTo(obs) < 2) {
+          const perp = new THREE.Vector3(-direction.z, 0, direction.x);
+
+          const left = current.clone().add(perp);
+          const right = current.clone().sub(perp);
+
+          const leftDist = obstacles.reduce(
+            (min, o) => Math.min(min, left.distanceTo(o)),
+            Infinity
+          );
+
+          const rightDist = obstacles.reduce(
+            (min, o) => Math.min(min, right.distanceTo(o)),
+            Infinity
+          );
+
+          direction = leftDist > rightDist ? perp : perp.negate();
+        }
+      }
+
+      const next = current.clone().add(direction.multiplyScalar(stepSize));
+
+      let isDanger = false;
+      for (let obs of obstacles) {
+        if (next.distanceTo(obs) < 1) isDanger = true;
+      }
+
+      newNodes.push({ pos: next.clone(), isDanger });
+      current = next;
+    }
+
+    setNodes(newNodes);
+  };
+
+  // 🔥 FIXED POINTER HANDLER
+  const handlePointer = (e: any) => {
+    e.stopPropagation();
+
+    const rect = gl.domElement.getBoundingClientRect();
+
+    const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
+
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const point = new THREE.Vector3();
+
+    const hit = raycaster.ray.intersectPlane(plane, point);
+    if (!hit) return;
+
+    generatePath(point);
+  };
 
   return (
     <>
-      <ambientLight intensity={1.5} />
-      <pointLight position={[10, 10, 10]} intensity={1} />
-      <XROrigin />
-      
-      {/* Debug Cube for Emulator Visibility */}
-      <mesh position={[0, 0, -2]}>
-        <boxGeometry args={[0.2, 0.2, 0.2]} />
-        <meshStandardMaterial color="cyan" emissive="cyan" emissiveIntensity={2} />
+      <ambientLight intensity={2} />
+      <pointLight position={[5, 10, 5]} intensity={4} />
+
+      <mesh
+        position={[0, -0.01, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        onClick={handlePointer}
+      >
+        <planeGeometry args={[30, 30]} />
+        <meshStandardMaterial color="#555" />
       </mesh>
 
-      {nodes.map((pos, i) => (
-        <GlowingPath key={`path-${i}`} position={pos} />
+      {obstacles.map((pos, i) => (
+        <mesh key={i} position={pos}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color="red" />
+        </mesh>
       ))}
+
+      {nodes.map((n, i) => (
+        <GlowingPath key={i} position={n.pos} isDanger={n.isDanger} />
+      ))}
+
+      {destination && <DestinationMarker position={destination} />}
     </>
   );
 };
 
 export default function ARScene() {
-  // Use a state listener to track the session status outside the Canvas
-  const [isPresenting, setIsPresenting] = useState(false);
-
-  useEffect(() => {
-    // Listen to store changes to toggle UI
-    const unsub = store.subscribe((state) => {
-      setIsPresenting(!!state.session);
-    });
-    return unsub;
-  }, []);
+  const [direction, setDirection] = useState('Click to set destination');
 
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#000', position: 'fixed', top: 0, left: 0 }}>
-      {/* START Button moved OUTSIDE Canvas for stability */}
-      {!isPresenting && (
-        <button 
-          style={{
-            position: 'absolute',
-            bottom: '40px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 1000,
-            padding: '16px 32px',
-            background: '#00ffff',
-            color: '#000',
-            border: 'none',
-            borderRadius: '50px',
-            fontWeight: '900',
-            fontSize: '1rem',
-            boxShadow: '0 0 20px rgba(0, 255, 255, 0.5)',
-            cursor: 'pointer',
-            pointerEvents: 'auto'
-          }}
-          onClick={() => store.enterAR()}
-        >
-          START SPATIAL SIGHT
-        </button>
-      )}
-
-      <Canvas 
-        shadows={false} 
-        camera={{ fov: 75 }}
-        gl={{ 
-          antialias: false, 
-          alpha: true,
-          stencil: true, // Enabled for better AR compositing
-          depth: true,
-          powerPreference: "high-performance",
-          preserveDrawingBuffer: false 
+    <div style={{ width: '100vw', height: '100vh', background: '#000' }}>
+      <div
+        style={{
+          position: 'absolute',
+          top: 20,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          color: 'white',
+          fontSize: '20px',
+          fontWeight: 'bold',
+          zIndex: 1000,
         }}
       >
-        <XR store={store}>
-          <SceneContent />
-        </XR>
+        {direction}
+      </div>
+
+      <Canvas camera={{ position: [0, 3, 5], fov: 60 }}>
+        <OrbitControls enablePan={false} enableZoom={false} />
+        <Scene setDirection={setDirection} />
       </Canvas>
     </div>
   );
