@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
+import { useVision } from '../hooks/useVision';
 
 interface PathNode {
   pos: THREE.Vector3;
@@ -11,26 +12,17 @@ interface PathNode {
 const GlowingPath = ({ position, isDanger }: any) => {
   return (
     <mesh position={position} rotation={[-Math.PI / 2, 0, 0]}>
-      <planeGeometry args={[1, 1]} />
+      <planeGeometry args={[0.8, 0.8]} />
       <meshBasicMaterial color={isDanger ? 'red' : 'cyan'} />
     </mesh>
   );
 };
 
-const DestinationMarker = ({ position }: any) => {
-  return (
-    <mesh position={position}>
-      <sphereGeometry args={[0.5, 32, 32]} />
-      <meshStandardMaterial color="lime" emissive="green" />
-    </mesh>
-  );
-};
+const Scene = ({ setStatus }: any) => {
+  const { camera } = useThree();
+  const { getObstacles, ready } = useVision();
 
-const Scene = ({ setDirection }: any) => {
   const [nodes, setNodes] = useState<PathNode[]>([]);
-  const [destination, setDestination] = useState<THREE.Vector3 | null>(null);
-
-  const { camera, gl } = useThree();
 
   const playerPos = useRef(new THREE.Vector3(0, 0, 0));
   const keys = useRef<{ [key: string]: boolean }>({});
@@ -67,60 +59,23 @@ const Scene = ({ setDirection }: any) => {
     camera.position.x = playerPos.current.x;
     camera.position.z = playerPos.current.z;
 
-    if (destination) {
-      const toTarget = destination.clone().sub(playerPos.current);
-      const cross = new THREE.Vector3().crossVectors(forward, toTarget);
-
-      if (toTarget.length() < 0.5) {
-        setDirection('Destination Reached');
-        setNodes([]);
-      } else if (cross.y > 0.2) {
-        setDirection('Turn Left');
-      } else if (cross.y < -0.2) {
-        setDirection('Turn Right');
-      } else {
-        setDirection('Move Forward');
-      }
-    }
-  });
-
-  const obstacles = [
-    new THREE.Vector3(2, 0, -2),
-    new THREE.Vector3(-2, 0, -3),
-    new THREE.Vector3(1, 0, -5),
-  ];
-
-  const generatePath = (target: THREE.Vector3) => {
-    setDestination(target);
+    // 🔥 REAL-TIME PATH GENERATION
+    const obstacles = getObstacles().map(o => new THREE.Vector3(o.x, 0, o.z));
 
     const newNodes: PathNode[] = [];
     let current = playerPos.current.clone();
-    const stepSize = 0.5;
+    const stepSize = 0.6;
 
-    for (let i = 0; i < 100; i++) {
-      const toTarget = target.clone().sub(current);
-      if (toTarget.length() < 0.5) break;
+    let hasDanger = false;
 
-      let direction = toTarget.normalize();
+    for (let i = 0; i < 15; i++) {
+      let direction = forward.clone();
 
       for (let obs of obstacles) {
         if (current.distanceTo(obs) < 2) {
           const perp = new THREE.Vector3(-direction.z, 0, direction.x);
-
-          const left = current.clone().add(perp);
-          const right = current.clone().sub(perp);
-
-          const leftDist = obstacles.reduce(
-            (min, o) => Math.min(min, left.distanceTo(o)),
-            Infinity
-          );
-
-          const rightDist = obstacles.reduce(
-            (min, o) => Math.min(min, right.distanceTo(o)),
-            Infinity
-          );
-
-          direction = leftDist > rightDist ? perp : perp.negate();
+          direction = perp;
+          hasDanger = true;
         }
       }
 
@@ -128,7 +83,10 @@ const Scene = ({ setDirection }: any) => {
 
       let isDanger = false;
       for (let obs of obstacles) {
-        if (next.distanceTo(obs) < 1) isDanger = true;
+        if (next.distanceTo(obs) < 1) {
+          isDanger = true;
+          hasDanger = true;
+        }
       }
 
       newNodes.push({ pos: next.clone(), isDanger });
@@ -136,45 +94,31 @@ const Scene = ({ setDirection }: any) => {
     }
 
     setNodes(newNodes);
-  };
 
-  // 🔥 FIXED POINTER HANDLER
-  const handlePointer = (e: any) => {
-    e.stopPropagation();
+    // 🔥 STATUS UPDATE
+    if (!ready) {
+      setStatus('scanning');
+    } else if (hasDanger) {
+      setStatus('warning');
+    } else {
+      setStatus('active');
+    }
+  });
 
-    const rect = gl.domElement.getBoundingClientRect();
-
-    const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
-
-    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-    const point = new THREE.Vector3();
-
-    const hit = raycaster.ray.intersectPlane(plane, point);
-    if (!hit) return;
-
-    generatePath(point);
-  };
+  const obstacles = getObstacles();
 
   return (
     <>
       <ambientLight intensity={2} />
       <pointLight position={[5, 10, 5]} intensity={4} />
 
-      <mesh
-        position={[0, -0.01, 0]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        onClick={handlePointer}
-      >
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[30, 30]} />
         <meshStandardMaterial color="#555" />
       </mesh>
 
-      {obstacles.map((pos, i) => (
-        <mesh key={i} position={pos}>
+      {obstacles.map((o, i) => (
+        <mesh key={i} position={[o.x, 0, o.z]}>
           <boxGeometry args={[1, 1, 1]} />
           <meshStandardMaterial color="red" />
         </mesh>
@@ -183,35 +127,18 @@ const Scene = ({ setDirection }: any) => {
       {nodes.map((n, i) => (
         <GlowingPath key={i} position={n.pos} isDanger={n.isDanger} />
       ))}
-
-      {destination && <DestinationMarker position={destination} />}
     </>
   );
 };
 
 export default function ARScene() {
-  const [direction, setDirection] = useState('Click to set destination');
+  const [status, setStatus] = useState<'scanning' | 'active' | 'warning'>('scanning');
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#000' }}>
-      <div
-        style={{
-          position: 'absolute',
-          top: 20,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          color: 'white',
-          fontSize: '20px',
-          fontWeight: 'bold',
-          zIndex: 1000,
-        }}
-      >
-        {direction}
-      </div>
-
       <Canvas camera={{ position: [0, 3, 5], fov: 60 }}>
         <OrbitControls enablePan={false} enableZoom={false} />
-        <Scene setDirection={setDirection} />
+        <Scene setStatus={setStatus} />
       </Canvas>
     </div>
   );
