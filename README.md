@@ -43,7 +43,7 @@ Note: Your server will likely be at `http://localhost:5173`.
 ### 3. Expose via ngrok
 In a new terminal window, run:
 ```bash
-ngrok http 5173
+npx ngrok http 5173
 ```
 Copy the Forwarding URL (e.g., `https://a1b2-c3d4.ngrok-free.dev`).
 
