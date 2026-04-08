@@ -1,42 +1,32 @@
-import { useState, useRef, useEffect, type Dispatch, type SetStateAction } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useVision } from '../hooks/useVision';
 import { PathShader } from '../shaders/PathShader';
-import { FloorShader } from '../shaders/floorShader';
 import { playSpatialAlert, initAudio } from '../hooks/SpatialAudio';
 import { ESCAPE_GAME } from '../hooks/EscapeLogic';
-
-interface PathNode {
-  pos: THREE.Vector3;
-  isDanger: boolean;
-}
+import { PuzzleUI } from './PuzzleUI';
 
 interface ARSceneProps {
-  setStatus: Dispatch<SetStateAction<'scanning' | 'active' | 'warning'>>;
+  setStatus: (status: 'scanning' | 'active' | 'warning') => void;
 }
 
-const LABELS: Record<number, string> = {
-  1: "Aeroplane", 2: "Bicycle", 3: "Bird", 4: "Boat", 5: "Bottle", 
-  6: "Bus", 7: "Car", 8: "Cat", 9: "Chair", 10: "Cow", 11: "Dining Table",
-  12: "Dog", 13: "Horse", 14: "Motorbike", 15: "Person", 16: "Potted Plant", 
-  17: "Sheep", 18: "Sofa", 19: "Train", 20: "Monitor"
-};
+const LABELS: Record<number, string> = { 9: "Chair", 15: "Person", 20: "Monitor" };
 
 let lastSpoken = '';
-const speak = (text: string) => {
-  if (lastSpoken === text) return;
-  lastSpoken = text;
+let lastSpeechTime = 0;
+const speak = (text: string, priority = false) => {
+  const now = Date.now();
+  if (!priority && lastSpoken === text && now - lastSpeechTime < 4000) return;
+  lastSpoken = text; lastSpeechTime = now;
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 1.1; 
-  // Safety: Ensure window.speechSynthesis exists
   if (window.speechSynthesis) {
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
   }
 };
 
-const GlowingPath = ({ position, isDanger }: { position: THREE.Vector3; isDanger: boolean }) => {
+const GlowingPath = ({ position, isDanger }: any) => {
   const meshRef = useRef<THREE.Mesh>(null!);
   useFrame((state) => {
     if (meshRef.current) {
@@ -53,7 +43,7 @@ const GlowingPath = ({ position, isDanger }: { position: THREE.Vector3; isDanger
   );
 };
 
-const DangerZone = ({ position }: { position: THREE.Vector3 }) => {
+const DangerZone = ({ position }: any) => {
   const ref = useRef<THREE.Mesh>(null!);
   useFrame((state) => {
     const scale = 1 + Math.sin(state.clock.elapsedTime * 4) * 0.15;
@@ -67,55 +57,30 @@ const DangerZone = ({ position }: { position: THREE.Vector3 }) => {
   );
 };
 
-const DirectionArrow = ({ position, direction }: { position: THREE.Vector3; direction: THREE.Vector3 }) => {
-  const ref = useRef<THREE.Mesh>(null!);
-  useFrame(() => {
-    if (!ref.current) return;
-    ref.current.rotation.y = Math.atan2(direction.x, direction.z);
-  });
-  return (
-    <mesh ref={ref} position={[position.x, 0.1, position.z]}>
-      <coneGeometry args={[0.15, 0.4, 3]} />
-      <meshStandardMaterial color="yellow" emissive="yellow" emissiveIntensity={2} />
-    </mesh>
-  );
-};
-
-const Scene = ({ setStatus, viewMode }: any) => {
+const Scene = ({ setStatus, setRiddlePanel, currentPuzzleIdx, viewMode }: any) => {
   const { camera, gl } = useThree();
-  const { getObstacles, ready } = useVision();
-  const [nodes, setNodes] = useState<PathNode[]>([]);
-  const [activeObstacles, setActiveObstacles] = useState<{pos: THREE.Vector3, label: number}[]>([]);
-  const [currentPuzzleIdx] = useState(0); 
+  const { getObstacles, scanMarker, ready } = useVision();
+  const [nodes, setNodes] = useState<any[]>([]);
+  const [activeObstacles, setActiveObstacles] = useState<any[]>([]);
   const playerPos = useRef(new THREE.Vector3(0, 1.6, 0)); 
   const deviceRot = useRef(new THREE.Euler());
+  const prevDist = useRef(0);
 
   useEffect(() => {
     const handleOrientation = (e: DeviceOrientationEvent) => {
       if (e.alpha !== null && e.beta !== null && e.gamma !== null) {
-        const alpha = THREE.MathUtils.degToRad(e.alpha); 
-        const beta = THREE.MathUtils.degToRad(e.beta);   
-        const gamma = THREE.MathUtils.degToRad(e.gamma); 
-        deviceRot.current.set(beta, alpha, -gamma, 'YXZ');
+        deviceRot.current.set(THREE.MathUtils.degToRad(e.beta), THREE.MathUtils.degToRad(e.alpha), -THREE.MathUtils.degToRad(e.gamma), 'YXZ');
       }
     };
     window.addEventListener('deviceorientation', handleOrientation);
     gl.setClearColor(0x000000, 0);
-    
-    const unlock = () => { 
-      initAudio(); 
-      speak("System unlocked. Scanning environment."); 
-    };
-    window.addEventListener('click', unlock);
-    
-    return () => {
-      window.removeEventListener('deviceorientation', handleOrientation);
-      window.removeEventListener('click', unlock);
-    };
+    const unlock = () => { initAudio(); speak("System online."); };
+    window.addEventListener('click', unlock, { once: true });
+    return () => window.removeEventListener('deviceorientation', handleOrientation);
   }, [gl]);
 
   useFrame((state) => {
-    // 1. Position/Rotation Sync
+    // 🔥 RESTORED: View Mode Logic
     if (viewMode === 'first-person') {
       camera.quaternion.setFromEuler(deviceRot.current);
       camera.position.copy(playerPos.current);
@@ -124,102 +89,88 @@ const Scene = ({ setStatus, viewMode }: any) => {
       camera.rotation.set(-Math.PI / 2, 0, 0);
     }
 
-    // 2. Obstacle Calculation
-    const rawObstacles = getObstacles() || []; // Fallback to empty array
-    const obstacles = rawObstacles.map(o => ({
-      pos: new THREE.Vector3(o.x, 0, o.z),
-      label: o.label
-    }));
+    const rawObstacles = getObstacles() || [];
+    const obstacles = rawObstacles.map(o => ({ pos: new THREE.Vector3(o.x, 0, o.z), label: o.label }));
     setActiveObstacles(obstacles);
 
-    // 3. Game/Riddle Proximity
     const target = ESCAPE_GAME.puzzles[currentPuzzleIdx];
     const targetVec = new THREE.Vector3(target.targetPos.x, 0, target.targetPos.z);
-    const distToRiddle = playerPos.current.distanceTo(targetVec);
+    const dist = playerPos.current.distanceTo(targetVec);
 
-    if (distToRiddle < ESCAPE_GAME.pingRadius && state.clock.elapsedTime % 1.5 < 0.02) {
-      playSpatialAlert(targetVec, 0.1, false); 
+    // Navigation Math
+    const toTarget = targetVec.clone().sub(playerPos.current).normalize();
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    forward.y = 0; forward.normalize();
+    const angle = forward.angleTo(toTarget);
+    const cross = new THREE.Vector3().crossVectors(forward, toTarget);
+    let clock = Math.round((cross.y > 0 ? -angle : angle) * (6 / Math.PI)) + 12;
+    if (clock > 12) clock -= 12; if (clock <= 0) clock += 12;
+
+    const deltaDist = prevDist.current - dist;
+    prevDist.current = dist;
+
+    // Feedback Logic
+    if (ready && state.clock.elapsedTime % 3.5 < 0.02) {
+      if (dist < 1.5) {
+        if (scanMarker()) { speak("Marker found.", true); setRiddlePanel(true); }
+        else { speak(`Scan the ${target.marker} marker.`); }
+      } else {
+        if (deltaDist > 0.05) speak(`Warmer. ${clock} o'clock.`);
+        else speak(`Target: ${clock} o'clock.`);
+      }
     }
 
-    // 4. Path Generation
-    const newNodes: PathNode[] = [];
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-    forward.y = 0;
-    forward.normalize();
-
+    // Path Logic
+    const newNodes = [];
     let currentPathPos = new THREE.Vector3(0, 0, -1);
-    let hasImmediateDanger = false;
-    let nearestObjectLabel = "";
-
-    for (let i = 0; i < 12; i++) {
-      let nodeIsDanger = false;
-      for (let obs of obstacles) {
-        if (currentPathPos.distanceTo(obs.pos) < 1.5) {
-          nodeIsDanger = true;
-          hasImmediateDanger = true;
-          nearestObjectLabel = LABELS[obs.label] || "Object";
-        }
-      }
-      newNodes.push({ pos: currentPathPos.clone(), isDanger: nodeIsDanger });
+    let pathIsDanger = false;
+    for (let i = 0; i < 10; i++) {
+      const isDanger = obstacles.some(obs => currentPathPos.distanceTo(obs.pos) < 1.4);
+      if (isDanger && i < 3) pathIsDanger = true;
+      newNodes.push({ pos: currentPathPos.clone(), isDanger });
       currentPathPos.add(forward.clone().multiplyScalar(0.8));
     }
     setNodes(newNodes);
-
-    // 5. Status & Voice Logic
-    if (ready && state.clock.elapsedTime % 3.0 < 0.02) {
-      if (hasImmediateDanger) {
-        speak(`Hazard: ${nearestObjectLabel} ahead.`);
-        if ("vibrate" in navigator) navigator.vibrate(200);
-      } else {
-        speak(target.hint);
-      }
-    }
-
-    // 🔥 FORCE UI Update if ready
-    setStatus(!ready ? 'scanning' : (hasImmediateDanger ? 'warning' : 'active'));
+    setStatus(!ready ? 'scanning' : (pathIsDanger ? 'warning' : 'active'));
   });
 
   return (
     <>
       <ambientLight intensity={1.5} />
       <gridHelper args={[50, 50, 0x00ffff, 0x111111]} position={[0, -0.05, 0]} />
-      
-      {/* Red Obstacles */}
-      {activeObstacles.map((obs, i) => (
-        <DangerZone key={`obs-${i}`} position={obs.pos} />
-      ))}
-
-      {/* Cyan Path */}
-      {nodes.map((n, i) => (
-        <group key={i}>
-          <GlowingPath position={n.pos} isDanger={n.isDanger} />
-          {i % 3 === 0 && !n.isDanger && (
-             <DirectionArrow position={n.pos} direction={new THREE.Vector3(0,0,-1)} />
-          )}
-        </group>
-      ))}
+      {activeObstacles.map((obs, i) => <DangerZone key={i} position={obs.pos} />)}
+      {nodes.map((n, i) => <GlowingPath key={i} position={n.pos} isDanger={n.isDanger} />)}
     </>
   );
 };
 
 export default function ARScene({ setStatus }: ARSceneProps) {
+  const [currentPuzzleIdx, setCurrentPuzzleIdx] = useState(0);
+  const [riddlePanel, setRiddlePanel] = useState(false);
   const [viewMode, setViewMode] = useState<'first-person' | 'top-down'>('first-person');
 
+  const handleSolve = () => {
+    setRiddlePanel(false);
+    if (currentPuzzleIdx < ESCAPE_GAME.puzzles.length - 1) setCurrentPuzzleIdx(p => p + 1);
+  };
+
   return (
-    <div style={{ width: '100vw', height: '100vh', background: 'transparent', position: 'relative' }}>
-      <div style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 2000, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+    <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
+      {/* View Toggle Buttons */}
+      <div style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 6000, display: 'flex', flexDirection: 'column', gap: '10px' }}>
         <button onClick={() => setViewMode('first-person')} style={{ padding: '12px 20px', background: 'rgba(0, 255, 255, 0.7)', border: 'none', borderRadius: '12px', fontWeight: 'bold' }}>Person View</button>
         <button onClick={() => setViewMode('top-down')} style={{ padding: '12px 20px', background: 'rgba(0, 255, 255, 0.7)', border: 'none', borderRadius: '12px', fontWeight: 'bold' }}>Top Map</button>
       </div>
 
-      <Canvas 
-        camera={{ fov: 75 }} 
-        gl={{ alpha: true, antialias: true }} 
-        onCreated={({ gl }) => {
-          gl.setClearColor(0x000000, 0); 
-        }}
-      >
-        <Scene setStatus={setStatus} viewMode={viewMode} />
+      {riddlePanel && <PuzzleUI puzzle={ESCAPE_GAME.puzzles[currentPuzzleIdx]} onSolve={handleSolve} />}
+      
+      <Canvas camera={{ fov: 75 }} gl={{ alpha: true }}>
+        <Scene 
+          setStatus={setStatus} 
+          setRiddlePanel={setRiddlePanel} 
+          currentPuzzleIdx={currentPuzzleIdx} 
+          viewMode={viewMode}
+        />
       </Canvas>
     </div>
   );
