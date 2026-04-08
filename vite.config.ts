@@ -1,14 +1,21 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import path from 'path';
 
+// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
-  server: {
-    host: true,
-    allowedHosts: true, // This is the key to stopping the white screen in Mozilla
-    headers: {
-      'ngrok-skip-browser-warning': 'true'
-    }
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
   },
-  build: { target: 'esnext' }
+  server: {
+    // 🔥 FIX: Set to true to allow any host (like ngrok)
+    // Using true instead of 'all' matches the TypeScript definition
+    allowedHosts: true, 
+    
+    // This allows the server to be accessible over your local network
+    host: true, 
+  },
 });

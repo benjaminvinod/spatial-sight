@@ -1,14 +1,19 @@
+import { useState } from 'react';
 import ARScene from './components/ARScene';
 import Overlay from './components/Overlay';
 
 function App() {
-  return (
-    <div>
-      {/* Always show overlay (set to active for now) */}
-      <Overlay status="active" />
+  // 🔥 STATE LIFTING: Capture AI status from ARScene to update the UI
+  const [status, setStatus] = useState<'scanning' | 'active' | 'warning'>('scanning');
 
-      {/* 3D Simulation Scene */}
-      <ARScene />
+  return (
+    <div className="app-container">
+      {/* 1. THE UI OVERLAY: Now dynamically reacts to AI insights */}
+      <Overlay status={status} />
+
+      {/* 2. THE 3D SCENE: We pass the setStatus setter down */}
+      <ARScene setStatus={setStatus} />
+      
     </div>
   );
 }

@@ -1,108 +1,106 @@
 import { useEffect, useRef, useState } from 'react';
+import { ImageSegmenter, FilesetResolver } from '@mediapipe/tasks-vision';
 
 export const useVision = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
+  const segmenterRef = useRef<ImageSegmenter | null>(null);
   const [ready, setReady] = useState(false);
-
-  // 🔥 STORE PREVIOUS FRAME FOR SMOOTHING
-  const prevObstaclesRef = useRef<{ x: number; z: number }[]>([]);
+  
+  const prevObstaclesRef = useRef<{ x: number; z: number; label: number }[]>([]);
 
   useEffect(() => {
-    const initCamera = async () => {
+    const initVision = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'environment' },
         });
-
+        
         const video = document.createElement('video');
         video.srcObject = stream;
+        video.setAttribute("playsinline", "true");
+        video.style.position = 'fixed'; 
+        video.style.top = '0';
+        video.style.left = '0';
+        video.style.width = '100vw';
+        video.style.height = '100vh';
+        video.style.objectFit = 'cover';
+        video.style.zIndex = '-1'; 
+        
+        document.body.appendChild(video); 
         video.play();
-
-        const canvas = document.createElement('canvas');
-
         videoRef.current = video;
-        canvasRef.current = canvas;
+
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
+        
+        segmenterRef.current = await ImageSegmenter.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/latest/deeplab_v3.tflite",
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          outputCategoryMask: true,
+        });
 
         video.onloadeddata = () => {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
           setReady(true);
         };
       } catch (err) {
-        console.error('Camera error:', err);
+        console.error('Vision initialization failed:', err);
       }
     };
 
-    initCamera();
+    initVision();
+
+    return () => {
+      if (videoRef.current) {
+        document.body.removeChild(videoRef.current);
+      }
+    };
   }, []);
 
-  // 🔥 IMPROVED OBSTACLE DETECTION WITH SMOOTHING
   const getObstacles = () => {
-    if (!videoRef.current || !canvasRef.current || !ready) return [];
+    if (!videoRef.current || !segmenterRef.current || !ready) return [];
 
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return [];
+    const result = segmenterRef.current.segmentForVideo(videoRef.current, performance.now());
+    const mask = result.categoryMask?.getAsUint8Array();
+    
+    if (!mask) return [];
 
-    ctx.drawImage(videoRef.current, 0, 0);
+    const { videoWidth: width, videoHeight: height } = videoRef.current;
+    const obstacles: { x: number; z: number; label: number }[] = [];
 
-    const { width, height } = canvasRef.current;
+    // 🔥 OPTIMIZED SCANNING: Smaller step = more detail
+    const step = 25; 
+    const horizon = 0.35; // Look higher up to see walls and coolers
 
-    const imageData = ctx.getImageData(0, 0, width, height);
-    const data = imageData.data;
+    for (let y = Math.floor(height * horizon); y < height; y += step) {
+      for (let x = Math.floor(width * 0.05); x < width * 0.95; x += step) {
+        const index = y * width + x;
+        const category = mask[index];
 
-    const newObstacles: { x: number; z: number }[] = [];
+        // DeepLab V3: anything > 0 is a detected object/obstacle
+        if (category > 0) { 
+          const normX = (x / width - 0.5) * 2.0;
+          const normY = (y / height); 
 
-    // 🔥 BETTER SAMPLING (LESS NOISE)
-    for (let i = 0; i < data.length; i += 20000) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
+          // 🔥 PERSPECTIVE CORRECTION: Ensure objects close to the phone register
+          const depth = -3.0 / (normY - horizon + 0.05); 
+          const lateral = normX * Math.abs(depth) * 0.9;
 
-      const brightness = (r + g + b) / 3;
+          if (depth < -15 || depth > -0.2) continue;
 
-      if (brightness < 60) {
-        const index = i / 4;
-        const x = index % width;
-        const y = Math.floor(index / width);
-
-        // 🔥 FOCUS: CENTER + LOWER HALF (WHERE FLOOR IS)
-        if (
-          x > width * 0.3 &&
-          x < width * 0.7 &&
-          y > height * 0.4
-        ) {
-          const worldX = (x / width - 0.5) * 5;
-          const worldZ = (y / height) * -6;
-
-          newObstacles.push({ x: worldX, z: worldZ });
+          obstacles.push({ x: lateral, z: depth, label: category });
         }
       }
     }
 
-    // 🔥 LIMIT COUNT
-    const limited = newObstacles.slice(0, 5);
-
-    // 🔥 TEMPORAL SMOOTHING
-    const smoothed = limited.map((obs, i) => {
-      const prev = prevObstaclesRef.current[i];
-
-      if (!prev) return obs;
-
-      return {
-        x: prev.x * 0.7 + obs.x * 0.3,
-        z: prev.z * 0.7 + obs.z * 0.3,
-      };
-    });
-
-    prevObstaclesRef.current = smoothed;
-
-    return smoothed;
+    // Sort by proximity (closest first)
+    const limited = obstacles.sort((a, b) => Math.abs(a.z) - Math.abs(b.z)).slice(0, 20);
+    prevObstaclesRef.current = limited;
+    return limited;
   };
 
-  return {
-    ready,
-    getObstacles,
-  };
+  return { ready, getObstacles };
 };

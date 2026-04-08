@@ -1,267 +1,191 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, type Dispatch, type SetStateAction } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useVision } from '../hooks/useVision';
+import { PathShader } from '../shaders/PathShader';
+import { FloorShader } from '../shaders/floorShader';
+import { playSpatialAlert, initAudio } from '../hooks/SpatialAudio';
 
 interface PathNode {
   pos: THREE.Vector3;
   isDanger: boolean;
 }
 
-/* 🔊 VOICE ENGINE */
-let lastSpoken = '';
+interface ARSceneProps {
+  setStatus: Dispatch<SetStateAction<'scanning' | 'active' | 'warning'>>;
+}
 
+const LABELS: Record<number, string> = {
+  1: "Aeroplane", 2: "Bicycle", 3: "Bird", 4: "Boat", 5: "Bottle", 
+  6: "Bus", 7: "Car", 8: "Cat", 9: "Chair", 10: "Cow", 11: "Dining Table",
+  12: "Dog", 13: "Horse", 14: "Motorbike", 15: "Person", 16: "Potted Plant", 
+  17: "Sheep", 18: "Sofa", 19: "Train", 20: "Monitor"
+};
+
+let lastSpoken = '';
 const speak = (text: string) => {
   if (lastSpoken === text) return;
   lastSpoken = text;
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 1;
-  utterance.pitch = 1;
+  utterance.rate = 1.1; 
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utterance);
 };
 
-const GlowingPath = ({ position, isDanger }: any) => {
+const GlowingPath = ({ position, isDanger }: { position: THREE.Vector3; isDanger: boolean }) => {
+  const meshRef = useRef<THREE.Mesh>(null!);
+  useFrame((state) => {
+    if (meshRef.current) {
+      const material = meshRef.current.material as THREE.ShaderMaterial;
+      material.uniforms.uTime.value = state.clock.elapsedTime;
+      material.uniforms.uColor.value = isDanger ? new THREE.Color(0xff0000) : new THREE.Color(0x00ffff);
+    }
+  });
   return (
-    <mesh position={position} rotation={[-Math.PI / 2, 0, 0]}>
-      <planeGeometry args={[0.8, 0.8]} />
-      <meshBasicMaterial color={isDanger ? 'red' : 'cyan'} />
+    <mesh ref={meshRef} position={position} rotation={[-Math.PI / 2, 0, 0]}>
+      <planeGeometry args={[0.6, 0.6]} />
+      <shaderMaterial args={[PathShader]} transparent blending={THREE.AdditiveBlending} depthWrite={false} />
     </mesh>
   );
 };
 
-/* 🔥 Pulsing Danger Zone */
 const DangerZone = ({ position }: any) => {
   const ref = useRef<THREE.Mesh>(null!);
   useFrame((state) => {
-    const scale = 1 + Math.sin(state.clock.elapsedTime * 3) * 0.1;
+    const scale = 1 + Math.sin(state.clock.elapsedTime * 4) * 0.15;
     ref.current.scale.set(scale, scale, scale);
   });
   return (
     <mesh ref={ref} position={position} rotation={[-Math.PI / 2, 0, 0]}>
-      <circleGeometry args={[0.9, 32]} />
-      <meshBasicMaterial color="red" transparent opacity={0.5} />
+      <circleGeometry args={[0.8, 32]} />
+      <meshBasicMaterial color="red" transparent opacity={0.4} />
     </mesh>
   );
 };
 
-/* 🔥 Direction Arrow */
 const DirectionArrow = ({ position, direction }: any) => {
   const ref = useRef<THREE.Mesh>(null!);
   useFrame(() => {
     if (!ref.current) return;
-    const angle = Math.atan2(direction.x, direction.z);
-    ref.current.rotation.y = angle;
+    ref.current.rotation.y = Math.atan2(direction.x, direction.z);
   });
   return (
-    <mesh ref={ref} position={[position.x, 0.15, position.z]}>
-      <coneGeometry args={[0.25, 0.7, 3]} />
-      <meshBasicMaterial color="yellow" />
+    <mesh ref={ref} position={[position.x, 0.1, position.z]}>
+      <coneGeometry args={[0.15, 0.4, 3]} />
+      <meshStandardMaterial color="yellow" emissive="yellow" emissiveIntensity={2} />
     </mesh>
   );
 };
 
 const Scene = ({ setStatus, viewMode }: any) => {
-  const { camera } = useThree();
+  const { camera, gl } = useThree();
   const { getObstacles, ready } = useVision();
-
   const [nodes, setNodes] = useState<PathNode[]>([]);
+  const [activeObstacles, setActiveObstacles] = useState<THREE.Vector3[]>([]);
   const playerPos = useRef(new THREE.Vector3(0, 1.6, 0)); 
-  const yaw = useRef(0);
-  const keys = useRef<{ [key: string]: boolean }>({});
+  const deviceRot = useRef(new THREE.Euler());
 
   useEffect(() => {
-    const handleDown = (e: KeyboardEvent) => keys.current[e.key.toLowerCase()] = true;
-    const handleUp = (e: KeyboardEvent) => keys.current[e.key.toLowerCase()] = false;
-    window.addEventListener('keydown', handleDown);
-    window.addEventListener('keyup', handleUp);
-    
-    let lastX = 0;
-    const onTouchStart = (e: TouchEvent) => { lastX = e.touches[0].clientX; };
-    const onTouchMove = (e: TouchEvent) => {
-      const deltaX = e.touches[0].clientX - lastX;
-      lastX = e.touches[0].clientX;
-      yaw.current -= deltaX * 0.005;
+    const handleOrientation = (e: DeviceOrientationEvent) => {
+      if (e.alpha !== null && e.beta !== null && e.gamma !== null) {
+        const alpha = THREE.MathUtils.degToRad(e.alpha); 
+        const beta = THREE.MathUtils.degToRad(e.beta);   
+        const gamma = THREE.MathUtils.degToRad(e.gamma); 
+        deviceRot.current.set(beta, alpha, -gamma, 'YXZ');
+      }
     };
-    window.addEventListener('touchstart', onTouchStart);
-    window.addEventListener('touchmove', onTouchMove);
-
+    window.addEventListener('deviceorientation', handleOrientation);
+    gl.setClearColor(0x000000, 0);
+    const unlock = () => { initAudio(); speak("System active. Scanning for obstacles."); };
+    window.addEventListener('click', unlock);
     return () => {
-      window.removeEventListener('keydown', handleDown);
-      window.removeEventListener('keyup', handleUp);
-      window.removeEventListener('touchstart', onTouchStart);
-      window.removeEventListener('touchmove', onTouchMove);
-    };
-  }, []);
-
-  useEffect(() => {
-    const unlock = () => {
-      speak('Navigation started');
+      window.removeEventListener('deviceorientation', handleOrientation);
       window.removeEventListener('click', unlock);
     };
-    window.addEventListener('click', unlock);
-  }, []);
+  }, [gl]);
 
-  useFrame((_, delta) => {
-    const moveSpeed = 5.0 * delta; 
-    const rotationSpeed = 2.0 * delta;
-
-    if (keys.current['a']) yaw.current += rotationSpeed;
-    if (keys.current['d']) yaw.current -= rotationSpeed;
-
-    // 🔥 FIXED FORWARD VECTOR: Ensure movement is always relative to view
-    const forward = new THREE.Vector3(
-      Math.sin(yaw.current),
-      0,
-      -Math.cos(yaw.current)
-    ).normalize();
-
-    if (keys.current['w']) {
-      playerPos.current.add(forward.clone().multiplyScalar(moveSpeed));
-    }
-    if (keys.current['s']) {
-      playerPos.current.sub(forward.clone().multiplyScalar(moveSpeed));
-    }
-
-    // 🔥 VIEW MODE LOGIC
+  useFrame((state) => {
     if (viewMode === 'first-person') {
+      camera.quaternion.setFromEuler(deviceRot.current);
       camera.position.copy(playerPos.current);
-      camera.rotation.set(0, yaw.current, 0);
-    } else if (viewMode === 'top-down') {
-      camera.position.set(playerPos.current.x, 15, playerPos.current.z);
+    } else {
+      camera.position.set(0, 15, 0);
       camera.rotation.set(-Math.PI / 2, 0, 0);
-    } else if (viewMode === 'side') {
-      camera.position.set(playerPos.current.x + 8, 5, playerPos.current.z + 8);
-      camera.lookAt(playerPos.current);
     }
 
-    const obstacles = getObstacles().map(o =>
-      new THREE.Vector3(playerPos.current.x + o.x, 0, playerPos.current.z + o.z)
-    );
+    const rawObstacles = getObstacles();
+    const obstacles = rawObstacles.map(o => new THREE.Vector3(o.x, 0, o.z));
+    setActiveObstacles(obstacles);
 
+    // Dynamic Path Generation
     const newNodes: PathNode[] = [];
-    let current = playerPos.current.clone().add(forward.clone().multiplyScalar(1));
-    const stepSize = 0.6;
-    let hasDanger = false;
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    forward.y = 0;
+    forward.normalize();
 
-    for (let i = 0; i < 15; i++) {
-      let direction = forward.clone();
+    let currentPos = new THREE.Vector3(0, 0, -1); // Start 1m in front
+    let hasImmediateDanger = false;
+
+    for (let i = 0; i < 12; i++) {
+      let nodeIsDanger = false;
       for (let obs of obstacles) {
-        if (current.distanceTo(obs) < 2) {
-          const toObs = obs.clone().sub(current).normalize();
-          const cross = new THREE.Vector3().crossVectors(direction, toObs);
-          const perp = cross.y > 0
-              ? new THREE.Vector3(-direction.z, 0, direction.x)
-              : new THREE.Vector3(direction.z, 0, -direction.x);
-          direction = perp;
-          hasDanger = true;
+        if (currentPos.distanceTo(obs) < 1.5) {
+          nodeIsDanger = true;
+          hasImmediateDanger = true;
         }
       }
-      const next = current.clone().add(direction.multiplyScalar(stepSize));
-      let isDanger = false;
-      for (let obs of obstacles) {
-        if (next.distanceTo(obs) < 1) {
-          isDanger = true;
-          hasDanger = true;
-        }
-      }
-      newNodes.push({ pos: next.clone(), isDanger });
-      current = next;
+      newNodes.push({ pos: currentPos.clone(), isDanger: nodeIsDanger });
+      currentPos.add(forward.clone().multiplyScalar(0.8));
     }
     setNodes(newNodes);
 
-    if (newNodes.length > 2) {
-      const p0 = newNodes[0].pos;
-      const p1 = newNodes[1].pos;
-      const dir = p1.clone().sub(p0).normalize();
-      const forwardFlat = forward.clone().normalize();
-      const cross = new THREE.Vector3().crossVectors(forwardFlat, dir);
-      let instruction = '';
-      if (Math.abs(cross.y) < 0.1) instruction = 'Go straight';
-      else if (cross.y > 0) instruction = 'Turn left';
-      else instruction = 'Turn right';
-      speak(instruction);
+    // Audio Logic
+    if (state.clock.elapsedTime % 2.5 < 0.02) {
+      if (hasImmediateDanger) {
+        speak("Obstacle detected. Stop or re-route.");
+        if ("vibrate" in navigator) navigator.vibrate(200);
+      } else if (ready) {
+        speak("Path clear.");
+      }
     }
 
-    if (!ready) setStatus('scanning');
-    else if (hasDanger) setStatus('warning');
-    else setStatus('active');
+    setStatus(!ready ? 'scanning' : (hasImmediateDanger ? 'warning' : 'active'));
   });
-
-  const obstaclesList = getObstacles().map(o => new THREE.Vector3(o.x, 0, o.z));
 
   return (
     <>
-      <ambientLight intensity={2} />
-      <pointLight position={[5, 10, 5]} intensity={4} />
-
-      <mesh 
-        rotation={[-Math.PI / 2, 0, 0]} 
-        onPointerDown={() => {
-          const forward = new THREE.Vector3(Math.sin(yaw.current), 0, -Math.cos(yaw.current));
-          playerPos.current.add(forward.multiplyScalar(0.5));
-        }}
-      >
-        <planeGeometry args={[100, 100]} />
-        <meshStandardMaterial color="#333" />
-      </mesh>
-
-      {obstaclesList.map((o, i) => (
-        <DangerZone
-          key={i}
-          position={[playerPos.current.x + o.x, 0.02, playerPos.current.z + o.z]}
-        />
+      <ambientLight intensity={1.5} />
+      <gridHelper args={[50, 50, 0x00ffff, 0x111111]} position={[0, -0.05, 0]} />
+      
+      {activeObstacles.map((pos, i) => (
+        <DangerZone key={`obs-${i}`} position={pos} />
       ))}
 
-      {nodes.map((n, i) => {
-        const next = nodes[i + 1];
-        let direction = new THREE.Vector3(0, 0, 1);
-        if (next) direction = next.pos.clone().sub(n.pos).normalize();
-        return (
-          <group key={i}>
-            <GlowingPath position={n.pos} isDanger={n.isDanger} />
-            {!n.isDanger && i % 2 === 0 && (
-              <DirectionArrow position={n.pos} direction={direction} />
-            )}
-          </group>
-        );
-      })}
+      {nodes.map((n, i) => (
+        <group key={i}>
+          <GlowingPath position={n.pos} isDanger={n.isDanger} />
+          {i % 3 === 0 && !n.isDanger && (
+             <DirectionArrow position={n.pos} direction={new THREE.Vector3(0,0,-1)} />
+          )}
+        </group>
+      ))}
     </>
   );
 };
 
-export default function ARScene() {
-  const [status, setStatus] = useState<'scanning' | 'active' | 'warning'>('scanning');
+export default function ARScene({ setStatus }: ARSceneProps) {
   const [viewMode, setViewMode] = useState<'first-person' | 'top-down' | 'side'>('first-person');
 
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#000', position: 'relative' }}>
-      
-      {/* HUD CONTROLS */}
-      <div style={{ 
-        position: 'absolute', top: '20px', right: '20px', zIndex: 2000, 
-        display: 'flex', flexDirection: 'column', gap: '8px' 
-      }}>
-        <button onClick={() => setViewMode('first-person')} style={navBtnStyle}>Person View</button>
-        <button onClick={() => setViewMode('top-down')} style={navBtnStyle}>Top Map</button>
-        <button onClick={() => setViewMode('side')} style={navBtnStyle}>Side View</button>
+    <div style={{ width: '100vw', height: '100vh', background: 'transparent', position: 'relative' }}>
+      <div style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 2000, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <button onClick={() => setViewMode('first-person')} style={{ padding: '12px 20px', background: 'rgba(0, 255, 255, 0.7)', border: 'none', borderRadius: '12px', fontWeight: 'bold' }}>Person View</button>
+        <button onClick={() => setViewMode('top-down')} style={{ padding: '12px 20px', background: 'rgba(0, 255, 255, 0.7)', border: 'none', borderRadius: '12px', fontWeight: 'bold' }}>Top Map</button>
       </div>
 
-      <Canvas camera={{ fov: 75 }}>
+      <Canvas camera={{ fov: 75 }} gl={{ alpha: true, antialias: true }} onCreated={({ gl }) => gl.setClearColor(0x000000, 0)}>
         <Scene setStatus={setStatus} viewMode={viewMode} />
       </Canvas>
     </div>
   );
 }
-
-const navBtnStyle = {
-  padding: '12px 16px',
-  background: 'rgba(0, 255, 255, 0.8)',
-  border: 'none',
-  borderRadius: '8px',
-  color: '#000',
-  fontWeight: 'bold',
-  cursor: 'pointer',
-  fontSize: '14px',
-  boxShadow: '0 4px 15px rgba(0, 255, 255, 0.3)'
-};
