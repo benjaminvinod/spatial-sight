@@ -5,6 +5,7 @@ import { useVision } from '../hooks/useVision';
 import { PathShader } from '../shaders/PathShader';
 import { FloorShader } from '../shaders/floorShader';
 import { playSpatialAlert, initAudio } from '../hooks/SpatialAudio';
+import { ESCAPE_GAME } from '../hooks/EscapeLogic';
 
 interface PathNode {
   pos: THREE.Vector3;
@@ -28,8 +29,11 @@ const speak = (text: string) => {
   lastSpoken = text;
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.rate = 1.1; 
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(utterance);
+  // Safety: Ensure window.speechSynthesis exists
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }
 };
 
 const GlowingPath = ({ position, isDanger }: { position: THREE.Vector3; isDanger: boolean }) => {
@@ -49,7 +53,7 @@ const GlowingPath = ({ position, isDanger }: { position: THREE.Vector3; isDanger
   );
 };
 
-const DangerZone = ({ position }: any) => {
+const DangerZone = ({ position }: { position: THREE.Vector3 }) => {
   const ref = useRef<THREE.Mesh>(null!);
   useFrame((state) => {
     const scale = 1 + Math.sin(state.clock.elapsedTime * 4) * 0.15;
@@ -63,7 +67,7 @@ const DangerZone = ({ position }: any) => {
   );
 };
 
-const DirectionArrow = ({ position, direction }: any) => {
+const DirectionArrow = ({ position, direction }: { position: THREE.Vector3; direction: THREE.Vector3 }) => {
   const ref = useRef<THREE.Mesh>(null!);
   useFrame(() => {
     if (!ref.current) return;
@@ -81,7 +85,8 @@ const Scene = ({ setStatus, viewMode }: any) => {
   const { camera, gl } = useThree();
   const { getObstacles, ready } = useVision();
   const [nodes, setNodes] = useState<PathNode[]>([]);
-  const [activeObstacles, setActiveObstacles] = useState<THREE.Vector3[]>([]);
+  const [activeObstacles, setActiveObstacles] = useState<{pos: THREE.Vector3, label: number}[]>([]);
+  const [currentPuzzleIdx] = useState(0); 
   const playerPos = useRef(new THREE.Vector3(0, 1.6, 0)); 
   const deviceRot = useRef(new THREE.Euler());
 
@@ -96,8 +101,13 @@ const Scene = ({ setStatus, viewMode }: any) => {
     };
     window.addEventListener('deviceorientation', handleOrientation);
     gl.setClearColor(0x000000, 0);
-    const unlock = () => { initAudio(); speak("System active. Scanning for obstacles."); };
+    
+    const unlock = () => { 
+      initAudio(); 
+      speak("System unlocked. Scanning environment."); 
+    };
     window.addEventListener('click', unlock);
+    
     return () => {
       window.removeEventListener('deviceorientation', handleOrientation);
       window.removeEventListener('click', unlock);
@@ -105,6 +115,7 @@ const Scene = ({ setStatus, viewMode }: any) => {
   }, [gl]);
 
   useFrame((state) => {
+    // 1. Position/Rotation Sync
     if (viewMode === 'first-person') {
       camera.quaternion.setFromEuler(deviceRot.current);
       camera.position.copy(playerPos.current);
@@ -113,42 +124,58 @@ const Scene = ({ setStatus, viewMode }: any) => {
       camera.rotation.set(-Math.PI / 2, 0, 0);
     }
 
-    const rawObstacles = getObstacles();
-    const obstacles = rawObstacles.map(o => new THREE.Vector3(o.x, 0, o.z));
+    // 2. Obstacle Calculation
+    const rawObstacles = getObstacles() || []; // Fallback to empty array
+    const obstacles = rawObstacles.map(o => ({
+      pos: new THREE.Vector3(o.x, 0, o.z),
+      label: o.label
+    }));
     setActiveObstacles(obstacles);
 
-    // Dynamic Path Generation
+    // 3. Game/Riddle Proximity
+    const target = ESCAPE_GAME.puzzles[currentPuzzleIdx];
+    const targetVec = new THREE.Vector3(target.targetPos.x, 0, target.targetPos.z);
+    const distToRiddle = playerPos.current.distanceTo(targetVec);
+
+    if (distToRiddle < ESCAPE_GAME.pingRadius && state.clock.elapsedTime % 1.5 < 0.02) {
+      playSpatialAlert(targetVec, 0.1, false); 
+    }
+
+    // 4. Path Generation
     const newNodes: PathNode[] = [];
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
     forward.y = 0;
     forward.normalize();
 
-    let currentPos = new THREE.Vector3(0, 0, -1); // Start 1m in front
+    let currentPathPos = new THREE.Vector3(0, 0, -1);
     let hasImmediateDanger = false;
+    let nearestObjectLabel = "";
 
     for (let i = 0; i < 12; i++) {
       let nodeIsDanger = false;
       for (let obs of obstacles) {
-        if (currentPos.distanceTo(obs) < 1.5) {
+        if (currentPathPos.distanceTo(obs.pos) < 1.5) {
           nodeIsDanger = true;
           hasImmediateDanger = true;
+          nearestObjectLabel = LABELS[obs.label] || "Object";
         }
       }
-      newNodes.push({ pos: currentPos.clone(), isDanger: nodeIsDanger });
-      currentPos.add(forward.clone().multiplyScalar(0.8));
+      newNodes.push({ pos: currentPathPos.clone(), isDanger: nodeIsDanger });
+      currentPathPos.add(forward.clone().multiplyScalar(0.8));
     }
     setNodes(newNodes);
 
-    // Audio Logic
-    if (state.clock.elapsedTime % 2.5 < 0.02) {
+    // 5. Status & Voice Logic
+    if (ready && state.clock.elapsedTime % 3.0 < 0.02) {
       if (hasImmediateDanger) {
-        speak("Obstacle detected. Stop or re-route.");
+        speak(`Hazard: ${nearestObjectLabel} ahead.`);
         if ("vibrate" in navigator) navigator.vibrate(200);
-      } else if (ready) {
-        speak("Path clear.");
+      } else {
+        speak(target.hint);
       }
     }
 
+    // 🔥 FORCE UI Update if ready
     setStatus(!ready ? 'scanning' : (hasImmediateDanger ? 'warning' : 'active'));
   });
 
@@ -157,10 +184,12 @@ const Scene = ({ setStatus, viewMode }: any) => {
       <ambientLight intensity={1.5} />
       <gridHelper args={[50, 50, 0x00ffff, 0x111111]} position={[0, -0.05, 0]} />
       
-      {activeObstacles.map((pos, i) => (
-        <DangerZone key={`obs-${i}`} position={pos} />
+      {/* Red Obstacles */}
+      {activeObstacles.map((obs, i) => (
+        <DangerZone key={`obs-${i}`} position={obs.pos} />
       ))}
 
+      {/* Cyan Path */}
       {nodes.map((n, i) => (
         <group key={i}>
           <GlowingPath position={n.pos} isDanger={n.isDanger} />
@@ -174,7 +203,7 @@ const Scene = ({ setStatus, viewMode }: any) => {
 };
 
 export default function ARScene({ setStatus }: ARSceneProps) {
-  const [viewMode, setViewMode] = useState<'first-person' | 'top-down' | 'side'>('first-person');
+  const [viewMode, setViewMode] = useState<'first-person' | 'top-down'>('first-person');
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: 'transparent', position: 'relative' }}>
@@ -183,7 +212,13 @@ export default function ARScene({ setStatus }: ARSceneProps) {
         <button onClick={() => setViewMode('top-down')} style={{ padding: '12px 20px', background: 'rgba(0, 255, 255, 0.7)', border: 'none', borderRadius: '12px', fontWeight: 'bold' }}>Top Map</button>
       </div>
 
-      <Canvas camera={{ fov: 75 }} gl={{ alpha: true, antialias: true }} onCreated={({ gl }) => gl.setClearColor(0x000000, 0)}>
+      <Canvas 
+        camera={{ fov: 75 }} 
+        gl={{ alpha: true, antialias: true }} 
+        onCreated={({ gl }) => {
+          gl.setClearColor(0x000000, 0); 
+        }}
+      >
         <Scene setStatus={setStatus} viewMode={viewMode} />
       </Canvas>
     </div>
