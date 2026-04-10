@@ -1,70 +1,278 @@
-# 🔐 Spatial Escape: AI-Powered AR Escape Room
-Spatial Escape is a high-performance Augmented Reality (AR) experience that merges real-time AI spatial awareness with marker-based puzzle solving. Unlike traditional AR games that rely solely on visual markers, this project uses computer vision to detect physical obstacles (like chairs or people) in your actual environment, creating a "Smart Navigation" path to guide you to hidden fragments.
+# 🧩 Spatial Escape — AR Puzzle Hunt
 
-## 🚀 Tech Stack & Why We Chose It
+An immersive **Augmented Reality (AR) escape room experience** powered by real-time computer vision, spatial audio, and interactive puzzles.  
+Use your camera to explore the real world, detect hidden targets, and solve riddles to escape.
 
-### 1. React + Vite
-* **Why React?** The project requires complex state management to handle AI "Ready" states, navigation trends (Warmer/Colder), and puzzle overlays simultaneously. React's component-based architecture allows us to isolate the 3D Engine from the UI.
-* **Why Vite?** Developing AR requires constant mobile testing. Vite's lightning-fast Hot Module Replacement (HMR) ensures that changes to 3D coordinates or AI logic are reflected instantly during development.
+---
 
-### 2. Three.js (@react-three/fiber)
-* This is the core 3D engine used to render the coordinate system, the cyan navigation rings, the 3D grid, and the pulsing red "Danger Zones".
+## 📌 1. About the Project
 
-### 3. MediaPipe (DeepLab V3)
-* **Spatial Awareness:** We use the DeepLab V3 model for semantic segmentation. It identifies objects like chairs, monitors, and people in the camera feed, allowing the app to "know" where physical hazards are located.
-* **Custom Pixel-Scanner:** A specialized algorithm designed to detect the high-contrast patterns of Hiro and Kanji markers without needing heavy external AR libraries.
+**Spatial Escape** is a mobile-first AR puzzle game that blends:
 
-### 4. Web Speech & Spatial Audio
-* **Relative Navigation:** Instead of static coordinates, the app uses "Clock-Face Navigation" (e.g., "Target at 2 o'clock") to guide the user relative to their current heading.
-* **Feedback Loop:** The app provides "Warmer" and "Colder" voice cues based on distance trends and uses pitch-shifting audio pings to indicate proximity.
+- 📷 Real-world scanning
+- 🧠 Computer vision (AI-based detection)
+- 🎮 Game mechanics (progression, scoring, puzzles)
+- 🎧 Spatial audio feedback
 
-## 🌐 The Role of ngrok
-Mobile browsers strictly block access to the Camera and Gyroscope over unencrypted `http` connections.
-ngrok is used to create a secure `https` tunnel to your local development server. This allows you to:
-1. Run the project on your laptop.
-2. Expose it via a secure ngrok URL.
-3. Open that URL on your physical iPhone or Android device to access the camera and spatial sensors in real-time.
+### 💡 Concept
 
-## 🛠️ Installation & Setup
+Instead of interacting with a virtual world, **the real world becomes your game environment**.
 
-### 1. Clone and Install
+Players must:
+
+- Physically move around
+- Find real-world objects (light, plants, shadows, etc.)
+- Unlock puzzles tied to those objects
+- Solve riddles to progress
+
+---
+
+## 🎮 2. How the Project Works
+
+### 🚀 How to Play
+
+1. Open the app and grant **camera access**
+2. A hint appears telling you what to find (e.g., *"Find a dark place"*)
+3. Point your camera at the correct real-world object
+4. Hold steady → the scanning ring fills up
+5. Once detected → a puzzle appears
+6. Solve the riddle within time
+7. Repeat for all 5 fragments to escape
+
+---
+
+### 📜 Game Rules
+
+- ⏳ Each puzzle has a **30-second timer**
+- 🧠 Faster answers = more points
+- ❌ Wrong answers increase error count
+- 💡 Hints unlock after multiple wrong attempts (cost points)
+- 🧩 Complete all 5 puzzles to win
+- 🏆 Final score = total points − hints used
+
+---
+
+## 🧪 3. Tech Stack
+
+### 🖥️ Frontend
+
+- **React (TypeScript)**
+- **Vite**
+
+### 🎨 Graphics & AR
+
+- **Three.js**
+- **@react-three/fiber**
+
+### 🧠 Computer Vision
+
+- **MediaPipe (Image Segmenter)**
+- Real-time semantic segmentation
+
+### 🎧 Audio
+
+- **Web Audio API**
+- Spatial (3D positional) sound
+
+### 🎨 Styling
+
+- **CSS + Tailwind base setup**
+
+---
+
+## ✨ 4. Features
+
+### 🔍 Real-World Scanning
+
+Detects:
+
+- Darkness
+- Bright light
+- Furniture (chairs)
+- Plants
+- Humans
+
+---
+
+### 🧠 AI-Powered Vision
+
+- Semantic segmentation using MediaPipe
+- Pixel-level analysis for:
+  - Brightness
+  - Object categories
+  - Color detection (green for plants)
+
+---
+
+### 🧭 Path Guidance System
+
+- Real-time walkable path detection
+- Dynamic obstacle highlighting
+- Animated directional arrows
+
+---
+
+### 🎧 Spatial Audio Feedback
+
+- 3D positional sound cues
+- Direction-based alerts
+- Haptic vibration for danger
+
+---
+
+### 🎮 Game Mechanics
+
+- Progressive puzzles (5 levels)
+- Timer-based scoring system
+- Hint system with penalties
+- Victory screen with rating
+
+---
+
+### 📱 Mobile AR Experience
+
+- Gyroscope-based camera movement
+- Full-screen immersive UI
+- Optimized for mobile browsers
+
+---
+
+## 🛠️ 5. Installation & Setup
+
+### 📦 Prerequisites
+
+- Node.js (v16 or above)
+- npm or yarn
+- Mobile device (recommended)
+- HTTPS environment (required for camera access)
+
+---
+
+### ⚙️ Installation
+
 ```bash
+# Clone the repository
 git clone https://github.com/your-username/spatial-escape.git
+
+# Navigate into the project
 cd spatial-escape
+
+# Install dependencies
 npm install
 ```
 
-### 2. Run the Local Server
+### ▶️ Run Locally
+
 ```bash
 npm run dev
 ```
-Note: Your server will likely be at `http://localhost:5173`.
 
-### 3. Expose via ngrok
-In a new terminal window, run:
+### 🌐 Access on Mobile
+
+1. Find your local IP:
+
 ```bash
-npx ngrok http 5173
+ipconfig   # Windows
+ifconfig   # Mac/Linux
 ```
-Copy the Forwarding URL (e.g., `https://a1b2-c3d4.ngrok-free.dev`).
 
-### 4. Mobile Launch
-1. Open the ngrok URL on your smartphone.
-2. Grant Camera and Motion/Orientation permissions.
-3. Tap the screen once to initialize the audio engine and AI scanning.
+2. Open on phone:
+http://YOUR-IP:5173
 
-## 🎮 How to Play
+### ⚠️ Important Notes
 
-**Phase 1: Navigate**
-Hold your phone upright (parallel to the walls). Follow the cyan rings and the voice guide. If the rings turn red, there is a physical object like a chair in your path—reroute immediately.
+- 📷 Camera requires HTTPS on mobile browsers
+- 🍎 iOS Safari requires user interaction before audio plays
+- 🎧 Tap once anywhere to enable audio
 
-**Phase 2: Search**
-As you get closer, the audio pings will increase in speed. When you are within 1.5 meters, the guide will ask you to search for a physical Hiro or Kanji marker.
+---
 
-**Phase 3: Solve**
-Center the marker in your camera feed. Once "Authenticated," a high-tech riddle panel will appear. Solve the riddle to unlock the next fragment and eventually escape.
+## 📁 6. Project Structure & File Roles
 
-## 📁 Project Structure
-* `src/components/ARScene.tsx`: The main engine handling 3D rendering and navigation logic.
-* `src/hooks/useVision.ts`: Manages the MediaPipe AI stream and the pixel-based marker scanner.
-* `src/hooks/EscapeLogic.ts`: Stores puzzle data, riddles, and target 3D coordinates.
-* `src/components/PuzzleUI.tsx`: The interface for the interactive riddle puzzles.
+### 🔹 Core App
+
+| File | Role |
+|------|------|
+| `main.tsx` | Entry point, renders React app |
+| `App.tsx` | Main game controller (state, flow, progression) |
+
+### 🔹 AR & Vision
+
+| File | Role |
+|------|------|
+| `ARScene.tsx` | Core AR engine (camera, scanning, rendering, logic) |
+| `useVision.ts` | Computer vision (MediaPipe integration, detection logic) |
+| `SpatialAudio.ts` | 3D positional audio system |
+
+### 🔹 Game Logic
+
+| File | Role |
+|------|------|
+| `EscapeLogic.ts` | Defines puzzles, scan types, riddles, answers |
+
+### 🔹 UI Components
+
+| File | Role |
+|------|------|
+| `IntroScreen.tsx` | Start screen + instructions |
+| `Overlay.tsx` | HUD (status, hints, progress) |
+| `PuzzleUI.tsx` | Puzzle interaction (timer, input, hints) |
+| `VictoryScreen.tsx` | Final score + results |
+
+### 🔹 Visual Effects
+
+| File | Role |
+|------|------|
+| `FloorShader.ts` | Grid floor shader |
+| `PathShader.ts` | Scan ring shader |
+
+### 🔹 Styling
+
+| File | Role |
+|------|------|
+| `App.css` | Layout, layering, z-index control |
+| `index.css` | Base styles, Tailwind setup |
+
+---
+
+### 🧠 How Everything Connects
+Camera Feed → useVision (AI)
+→ ARScene (processing + rendering)
+→ Scan Detection → PuzzleUI
+→ Solve → App State → Next Puzzle
+→ VictoryScreen
+
+---
+
+## 🚧 Known Limitations
+
+- Requires good lighting for detection accuracy
+- Performance depends on device capability
+- iOS has strict audio + camera restrictions
+- Works best in mobile browsers (not desktop)
+
+---
+
+## 🔮 Future Improvements
+
+- 🌍 Multiplayer mode
+- 🧠 More advanced object detection
+- 🎨 Enhanced AR visuals
+- 🗺️ Location-based puzzles
+- 🎤 Voice-based interaction
+
+---
+
+## 🙌 Credits
+
+- [MediaPipe](https://mediapipe.dev/) (Google) for vision models
+- [Three.js](https://threejs.org/) for 3D rendering
+- React ecosystem
+
+---
+
+## 🏁 Final Note
+
+This project demonstrates how real-world environments can become interactive game spaces using modern web technologies.
+
+> *"The world is your puzzle."*
