@@ -2,17 +2,32 @@ import { useState } from 'react';
 import ARScene from './components/ARScene';
 import Overlay from './components/Overlay';
 
+// 🔥 NEW: type safety (no behavior change)
+type Obstacle = {
+  x: number;
+  z: number;
+};
+
 function App() {
-  // 🔥 STATE LIFTING: Capture AI status from ARScene to update the UI
+  // 🔥 EXISTING
   const [status, setStatus] = useState<'scanning' | 'active' | 'warning'>('scanning');
+
+  // 🔥 UPDATED: typed instead of any
+  const [gridObstacles, setGridObstacles] = useState<Obstacle[]>([]);
 
   return (
     <div className="app-container">
-      {/* 1. THE UI OVERLAY: Now dynamically reacts to AI insights */}
-      <Overlay status={status} />
+      {/* 1. UI OVERLAY */}
+      <Overlay 
+        status={status} 
+        gridObstacles={gridObstacles} 
+      />
 
-      {/* 2. THE 3D SCENE: We pass the setStatus setter down */}
-      <ARScene setStatus={setStatus} />
+      {/* 2. 3D SCENE */}
+      <ARScene 
+        setStatus={setStatus} 
+        setGridObstacles={setGridObstacles} 
+      />
       
     </div>
   );
