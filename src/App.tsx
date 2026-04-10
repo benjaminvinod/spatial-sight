@@ -1,34 +1,55 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import ARScene from './components/ARScene';
 import Overlay from './components/Overlay';
+import IntroScreen from './components/IntroScreen';
+import VictoryScreen from './components/VictoryScreen';
+import { PUZZLES } from './hooks/EscapeLogic';
 
-// 🔥 NEW: type safety (no behavior change)
-type Obstacle = {
-  x: number;
-  z: number;
-};
+type GameState = 'intro' | 'playing' | 'victory';
 
 function App() {
-  // 🔥 EXISTING
+  const [gameState, setGameState] = useState<GameState>('intro');
+  const [puzzleIdx, setPuzzleIdx] = useState(0);
   const [status, setStatus] = useState<'scanning' | 'active' | 'warning'>('scanning');
 
-  // 🔥 UPDATED: typed instead of any
-  const [gridObstacles, setGridObstacles] = useState<Obstacle[]>([]);
+  const handleStart = useCallback(() => {
+    setPuzzleIdx(0);
+    setGameState('playing');
+  }, []);
+
+  const handlePuzzleSolved = useCallback(() => {
+    if (puzzleIdx >= PUZZLES.length - 1) {
+      setGameState('victory');
+    } else {
+      setPuzzleIdx(p => p + 1);
+    }
+  }, [puzzleIdx]);
+
+  const handleRestart = useCallback(() => {
+    setPuzzleIdx(0);
+    setGameState('intro');
+  }, []);
+
+  if (gameState === 'intro') {
+    return <IntroScreen onStart={handleStart} />;
+  }
+
+  if (gameState === 'victory') {
+    return <VictoryScreen onRestart={handleRestart} />;
+  }
 
   return (
-    <div className="app-container">
-      {/* 1. UI OVERLAY */}
-      <Overlay 
-        status={status} 
-        gridObstacles={gridObstacles} 
+    <div style={{ width: '100vw', height: '100vh', position: 'relative', background: 'transparent' }}>
+      <Overlay
+        status={status}
+        puzzle={PUZZLES[puzzleIdx]}
+        totalPuzzles={PUZZLES.length}
       />
-
-      {/* 2. 3D SCENE */}
-      <ARScene 
-        setStatus={setStatus} 
-        setGridObstacles={setGridObstacles} 
+      <ARScene
+        puzzleIdx={puzzleIdx}
+        onPuzzleSolved={handlePuzzleSolved}
+        setStatus={setStatus}
       />
-      
     </div>
   );
 }

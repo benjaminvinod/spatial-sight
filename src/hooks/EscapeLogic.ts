@@ -1,76 +1,71 @@
-export interface PuzzleNode {
+export type ScanType = 'dark' | 'bright' | 'seated' | 'nature' | 'self';
+
+export interface Puzzle {
   id: number;
   name: string;
-  marker: 'hiro' | 'kanji';
+  chapter: string;
   hint: string;
-  targetPos: { x: number; z: number };
+  scanInstruction: string;
+  scanType: ScanType;
   riddle: string;
   answer: string;
-
-  // 🔥 NEW: assistive + future extensions
-  requiresScan?: boolean;
-  audioHint?: string;
-  difficulty?: 'easy' | 'medium' | 'hard';
-
-  // 🔥 NEW: future-safe marker matching
-  markerId?: string;
+  solvedMessage: string;
 }
 
-export const ESCAPE_GAME = {
-  proximityThreshold: 1.5,
-  pingRadius: 4.0,
-
-  puzzles: [
-    {
-      id: 1,
-      name: "The First Fragment",
-      marker: "hiro",
-      markerId: "hiro", // 🔥 NEW
-      hint: "Find the HIRO marker 2 meters ahead.",
-      targetPos: { x: 0, z: -2.0 },
-      riddle: "Sum of 3 + 4 + 5",
-      answer: "12",
-
-      // 🔥 ensured defaults
-      requiresScan: true,
-      audioHint: "Marker directly ahead",
-      difficulty: "easy"
-    },
-    {
-      id: 2,
-      name: "The Seated Sentinel",
-      marker: "kanji",
-      markerId: "kanji", // 🔥 NEW
-      hint: "Find the KANJI marker near the chair.",
-      targetPos: { x: 2.0, z: -3.0 },
-      riddle: "I have cities but no houses. Mountains but no trees. What am I?",
-      answer: "map",
-
-      // 🔥 ensured defaults
-      requiresScan: true,
-      audioHint: "Marker slightly to the right",
-      difficulty: "medium"
-    }
-  ] as PuzzleNode[]
-};
-
-// 🔥 NEW: helper – safe access
-export const getCurrentPuzzle = (index: number): PuzzleNode | null => {
-  if (index < 0 || index >= ESCAPE_GAME.puzzles.length) return null;
-  return ESCAPE_GAME.puzzles[index];
-};
-
-// 🔥 NEW: helper – check if scan required
-export const requiresMarkerScan = (puzzle: PuzzleNode): boolean => {
-  return puzzle.requiresScan !== false; // default true
-};
-
-// 🔥 NEW: helper – proximity check (optional use in ARScene)
-export const isWithinProximity = (
-  playerPos: { x: number; z: number },
-  targetPos: { x: number; z: number }
-): boolean => {
-  const dx = playerPos.x - targetPos.x;
-  const dz = playerPos.z - targetPos.z;
-  return Math.sqrt(dx * dx + dz * dz) <= ESCAPE_GAME.proximityThreshold;
-};
+export const PUZZLES: Puzzle[] = [
+  {
+    id: 1,
+    name: "The Shadow Fragment",
+    chapter: "Chapter 1 of 5",
+    hint: "Seek where the light does not reach.",
+    scanInstruction: "Point camera at a dark shadow or corner",
+    scanType: 'dark',
+    riddle: "The more you take, the more you leave behind. What am I?",
+    answer: "steps",
+    solvedMessage: "Fragment 1 secured. The darkness holds no more secrets."
+  },
+  {
+    id: 2,
+    name: "The Light Beacon",
+    chapter: "Chapter 2 of 5",
+    hint: "Find where the light enters your world.",
+    scanInstruction: "Point camera at a window, lamp, or bright light source",
+    scanType: 'bright',
+    riddle: "I have cities but no houses, mountains but no trees, water but no fish. What am I?",
+    answer: "map",
+    solvedMessage: "Fragment 2 secured. The beacon is lit."
+  },
+  {
+    id: 3,
+    name: "The Resting Place",
+    chapter: "Chapter 3 of 5",
+    hint: "Find where the weary sit.",
+    scanInstruction: "Point camera at a chair, sofa, or couch",
+    scanType: 'seated',
+    riddle: "I have four legs in the morning, two at noon, and three at night. What am I?",
+    answer: "man",
+    solvedMessage: "Fragment 3 secured. Rest while you can."
+  },
+  {
+    id: 4,
+    name: "The Living Cipher",
+    chapter: "Chapter 4 of 5",
+    hint: "Find what grows in silence.",
+    scanInstruction: "Point camera at a plant, leaves, or greenery",
+    scanType: 'nature',
+    riddle: "What can you catch but never throw?",
+    answer: "cold",
+    solvedMessage: "Fragment 4 secured. Life finds a way."
+  },
+  {
+    id: 5,
+    name: "The Final Truth",
+    chapter: "Chapter 5 of 5 — FINAL",
+    hint: "The last clue has faced you all along.",
+    scanInstruction: "Point at a person — face the mirror or find someone",
+    scanType: 'self',
+    riddle: "I have a face and two hands but no arms or legs. What am I?",
+    answer: "clock",
+    solvedMessage: "ALL FRAGMENTS SECURED. You have escaped the loop."
+  }
+];

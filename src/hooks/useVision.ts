@@ -1,24 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { ImageSegmenter, FilesetResolver } from '@mediapipe/tasks-vision';
+import { ScanType } from './EscapeLogic';
 
 export const useVision = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const segmenterRef = useRef<ImageSegmenter | null>(null);
   const [ready, setReady] = useState(false);
 
-  const prevObstaclesRef = useRef<any[]>([]);
-  const lastRunRef = useRef(0);
-  const cachedObstaclesRef = useRef<any[]>([]);
-
-  // 🔥 motion tracking
-  const historyRef = useRef<Map<number, any[]>>(new Map());
-
-  // 🔥 NEW: marker smoothing
-  const markerHistoryRef = useRef<number[]>([]);
-
-  // 🔥 NEW: constants
-  const SMOOTHING_ALPHA = 0.35; // EMA smoothing
-  const STABILITY_THRESHOLD = 0.015;
+  // Cached segmentation — run at most every 350ms to avoid timestamp conflicts
+  const lastSegMask = useRef<Uint8Array | null>(null);
+  const lastSegTimestamp = useRef(0);
 
   useEffect(() => {
     const initVision = async () => {
@@ -26,29 +17,33 @@ export const useVision = () => {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'environment' },
         });
-        
+
         const video = document.createElement('video');
         video.srcObject = stream;
-        video.setAttribute("playsinline", "true");
-        video.style.position = 'fixed'; 
-        video.style.top = '0'; video.style.left = '0';
-        video.style.width = '100vw'; video.style.height = '100vh';
-        video.style.objectFit = 'cover'; video.style.zIndex = '-1'; 
-        
-        document.body.appendChild(video); 
+        video.setAttribute('playsinline', 'true');
+        video.style.position = 'fixed';
+        video.style.top = '0';
+        video.style.left = '0';
+        video.style.width = '100vw';
+        video.style.height = '100vh';
+        video.style.objectFit = 'cover';
+        video.style.zIndex = '-1';
+
+        document.body.appendChild(video);
         video.play();
         videoRef.current = video;
 
         const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
         );
-        
+
         segmenterRef.current = await ImageSegmenter.createFromOptions(vision, {
           baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/latest/deeplab_v3.tflite",
-            delegate: "GPU"
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/latest/deeplab_v3.tflite',
+            delegate: 'GPU',
           },
-          runningMode: "VIDEO",
+          runningMode: 'VIDEO',
           outputCategoryMask: true,
         });
 
@@ -59,186 +54,140 @@ export const useVision = () => {
     };
 
     initVision();
-    return () => { if (videoRef.current) document.body.removeChild(videoRef.current); };
+    return () => {
+      if (videoRef.current) document.body.removeChild(videoRef.current);
+    };
   }, []);
 
-  // 🔥 NEW: stable marker detection
-  const scanMarker = () => {
-    if (!videoRef.current || !ready) return false;
-
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return false;
-
-    canvas.width = 100; 
-    canvas.height = 100;
-
-    ctx.drawImage(
-      videoRef.current,
-      videoRef.current.videoWidth / 2 - 50,
-      videoRef.current.videoHeight / 2 - 50,
-      100, 100,
-      0, 0,
-      100, 100
-    );
-
-    const imageData = ctx.getImageData(0, 0, 100, 100).data;
-
-    let dark = 0; 
-    let bright = 0;
-
-    for (let i = 0; i < imageData.length; i += 4) {
-      const avg = (imageData[i] + imageData[i+1] + imageData[i+2]) / 3;
-      if (avg < 60) dark++; 
-      if (avg > 190) bright++;
+  /** Returns cached segmentation mask, refreshed at most every 350ms */
+  const getSegMask = (): Uint8Array | null => {
+    if (!videoRef.current || !segmenterRef.current || !ready) return null;
+    const now = performance.now();
+    if (now - lastSegTimestamp.current < 350 && lastSegMask.current) {
+      return lastSegMask.current;
     }
-
-    const detected = dark > 2500 && bright > 800 ? 1 : 0;
-
-    // 🔥 temporal smoothing (reduces flicker)
-    markerHistoryRef.current.push(detected);
-    if (markerHistoryRef.current.length > 5) {
-      markerHistoryRef.current.shift();
+    lastSegTimestamp.current = now;
+    try {
+      const result = segmenterRef.current.segmentForVideo(videoRef.current, now);
+      lastSegMask.current = result.categoryMask?.getAsUint8Array() ?? null;
+    } catch {
+      // keep stale mask on error
     }
-
-    const sum = markerHistoryRef.current.reduce((a, b) => a + b, 0);
-
-    return sum >= 3; // majority vote
+    return lastSegMask.current;
   };
 
-  const getObstacles = () => {
-    if (!videoRef.current || !segmenterRef.current || !ready) return [];
-
-    const now = performance.now();
-    if (now - lastRunRef.current < 100) {
-      return cachedObstaclesRef.current;
+  /** Average brightness (0–255) of the center 40% of the frame */
+  const getCenterBrightness = (): number => {
+    if (!videoRef.current || !ready) return -1;
+    const v = videoRef.current;
+    if (v.videoWidth === 0) return -1;
+    const canvas = document.createElement('canvas');
+    canvas.width = 80;
+    canvas.height = 80;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return -1;
+    ctx.drawImage(v, v.videoWidth * 0.3, v.videoHeight * 0.3, v.videoWidth * 0.4, v.videoHeight * 0.4, 0, 0, 80, 80);
+    const data = ctx.getImageData(0, 0, 80, 80).data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      sum += (data[i] + data[i + 1] + data[i + 2]) / 3;
     }
-    lastRunRef.current = now;
+    return sum / (80 * 80);
+  };
 
-    const result = segmenterRef.current.segmentForVideo(videoRef.current, now);
-    const mask = result.categoryMask?.getAsUint8Array();
-    if (!mask) return [];
+  /** Fraction of center pixels that are green-dominant */
+  const getCenterGreenRatio = (): number => {
+    if (!videoRef.current || !ready) return 0;
+    const v = videoRef.current;
+    if (v.videoWidth === 0) return 0;
+    const canvas = document.createElement('canvas');
+    canvas.width = 80;
+    canvas.height = 80;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return 0;
+    ctx.drawImage(v, v.videoWidth * 0.2, v.videoHeight * 0.2, v.videoWidth * 0.6, v.videoHeight * 0.6, 0, 0, 80, 80);
+    const data = ctx.getImageData(0, 0, 80, 80).data;
+    let greenPx = 0;
+    const total = 80 * 80;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      if (g > r + 15 && g > b + 15 && g > 50) greenPx++;
+    }
+    return greenPx / total;
+  };
 
+  /** Fraction of center 50% of frame matching any of the given DeepLab category IDs */
+  const getCenterCategoryRatio = (categoryIds: number[]): number => {
+    const mask = getSegMask();
+    if (!mask || !videoRef.current) return 0;
+    const { videoWidth: w, videoHeight: h } = videoRef.current;
+    const x1 = Math.floor(w * 0.25), x2 = Math.floor(w * 0.75);
+    const y1 = Math.floor(h * 0.25), y2 = Math.floor(h * 0.75);
+    let match = 0, total = 0;
+    for (let y = y1; y < y2; y += 2) {
+      for (let x = x1; x < x2; x += 2) {
+        if (categoryIds.includes(mask[y * w + x])) match++;
+        total++;
+      }
+    }
+    return total > 0 ? match / total : 0;
+  };
+
+  /**
+   * Returns true if the camera currently sees the requested scan target.
+   * Called at ~500ms intervals by the game loop.
+   */
+  const checkScanTarget = (type: ScanType): boolean => {
+    if (!ready) return false;
+    switch (type) {
+      case 'dark': {
+        const b = getCenterBrightness();
+        return b >= 0 && b < 60;
+      }
+      case 'bright': {
+        const b = getCenterBrightness();
+        return b >= 0 && b > 150;
+      }
+      case 'seated': {
+        // Chair=9, Sofa/couch=18
+        return getCenterCategoryRatio([9, 18]) > 0.04;
+      }
+      case 'nature': {
+        // Plant=16 OR dominant green color
+        if (getCenterCategoryRatio([16]) > 0.03) return true;
+        return getCenterGreenRatio() > 0.12;
+      }
+      case 'self': {
+        // Person=15
+        return getCenterCategoryRatio([15]) > 0.05;
+      }
+    }
+  };
+
+  /** Returns nearby detected objects for the obstacle overlay */
+  const getObstacles = (): { x: number; z: number; label: number }[] => {
+    const mask = getSegMask();
+    if (!mask || !videoRef.current) return [];
     const { videoWidth: width, videoHeight: height } = videoRef.current;
     const obstacles: { x: number; z: number; label: number }[] = [];
-
-    const step = 25; 
-    const horizon = 0.35; 
-
+    const step = 30;
+    const horizon = 0.35;
     for (let y = Math.floor(height * horizon); y < height; y += step) {
       for (let x = Math.floor(width * 0.05); x < width * 0.95; x += step) {
-        const index = y * width + x;
-        const category = mask[index];
-
-        if (category > 1) { 
-          const normY = (y / height); 
-          const depth = -3.0 / (normY - horizon + 0.05); 
+        const category = mask[y * width + x];
+        if (category > 0) {
+          const normY = y / height;
+          const depth = -3.0 / (normY - horizon + 0.05);
           const lateral = ((x / width - 0.5) * 2.0) * Math.abs(depth) * 0.9;
-
           if (depth < -15 || depth > -0.2) continue;
-
           obstacles.push({ x: lateral, z: depth, label: category });
         }
       }
     }
-
-    // 🔥 EMA smoothing + dead zone
-    const smoothed = obstacles.map((o, i) => {
-      const prev = prevObstaclesRef.current[i];
-      if (!prev) return o;
-
-      let dx = o.x - prev.x;
-      let dz = o.z - prev.z;
-
-      if (Math.abs(dx) < STABILITY_THRESHOLD) dx = 0;
-      if (Math.abs(dz) < STABILITY_THRESHOLD) dz = 0;
-
-      return {
-        x: prev.x + dx * SMOOTHING_ALPHA,
-        z: prev.z + dz * SMOOTHING_ALPHA,
-        label: o.label
-      };
-    });
-
-    prevObstaclesRef.current = smoothed;
-
-    // 🔮 IMPROVED prediction (time-aware + decay)
-    const predicted = smoothed.map((o, i) => {
-      const key = i;
-
-      if (!historyRef.current.has(key)) {
-        historyRef.current.set(key, []);
-      }
-
-      const history = historyRef.current.get(key)!;
-      history.push({ x: o.x, z: o.z, t: now });
-
-      if (history.length > 4) history.shift();
-
-      if (history.length < 2) return o;
-
-      const a = history[0];
-      const b = history[history.length - 1];
-
-      const dt = b.t - a.t;
-      if (dt === 0) return o;
-
-      const vx = (b.x - a.x) / dt;
-      const vz = (b.z - a.z) / dt;
-
-      const predictionHorizon = 180; // ms
-      const age = now - b.t;
-      const confidence = Math.exp(-age / 300);
-
-      return {
-        x: b.x + vx * predictionHorizon * confidence,
-        z: b.z + vz * predictionHorizon * confidence,
-        label: o.label
-      };
-    });
-
-    const finalObstacles = predicted
+    return obstacles
       .sort((a, b) => Math.abs(a.z) - Math.abs(b.z))
-      .slice(0, 20);
-
-    cachedObstaclesRef.current = finalObstacles;
-
-    return finalObstacles;
+      .slice(0, 15);
   };
 
-  const getObstacleZones = () => {
-    const obstacles = cachedObstaclesRef.current;
-
-    let left = 0, center = 0, right = 0;
-
-    obstacles.forEach(o => {
-      if (o.x < -0.5) left++;
-      else if (o.x > 0.5) right++;
-      else center++;
-    });
-
-    return { left, center, right };
-  };
-
-  const getObstacleDensity = () => {
-    const obstacles = cachedObstaclesRef.current;
-
-    const bins = new Array(9).fill(0);
-
-    obstacles.forEach(o => {
-      const angle = Math.atan2(o.x, -o.z);
-      const index = Math.floor((angle + Math.PI/2) / (Math.PI/9));
-      if (index >= 0 && index < bins.length) bins[index]++;
-    });
-
-    return bins;
-  };
-
-  return { 
-    ready, 
-    getObstacles, 
-    scanMarker, 
-    getObstacleZones,
-    getObstacleDensity
-  };
+  return { ready, getObstacles, checkScanTarget };
 };

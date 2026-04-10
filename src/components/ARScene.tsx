@@ -1,311 +1,357 @@
-import { useState, useRef, useEffect } from 'react'
-import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import * as THREE from 'three'
-import { useVision } from '../hooks/useVision'
-import { PathShader } from '../shaders/PathShader'
-import { FloorShader } from '../shaders/floorShader'
-import { initAudio, playSpatialAlert, startNavigationTone, stopNavigationTone, playNavigationCue } from '../hooks/SpatialAudio'
-import { ESCAPE_GAME } from '../hooks/EscapeLogic'
-import { PuzzleUI } from './PuzzleUI'
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import * as THREE from 'three';
+import { useVision } from '../hooks/useVision';
+import { initAudio } from '../hooks/SpatialAudio';
+import { PUZZLES, ScanType } from '../hooks/EscapeLogic';
+import { PuzzleUI } from './PuzzleUI';
+import { PathShader } from '../shaders/PathShader';
 
-const BASE_SPEED = 0.04
-const TURN_SENSITIVITY = 0.005
+// 🔊 Voice system (ADDED)
+let lastSpoken = '';
+let lastSpeechTime = 0;
 
-const MAX_YAW_STEP = 0.02
-const STABILITY_THRESHOLD = 0.02
+const speak = (text: string, priority = false) => {
+  const now = Date.now();
 
-const Scene = ({ setStatus, setRiddlePanel, currentPuzzleIdx, setGridObstacles }: any) => {
-  const { camera, gl } = useThree()
-  const { getObstacles, scanMarker, ready, getObstacleZones } = useVision()
+  if (!priority && lastSpoken === text && now - lastSpeechTime < 3000) return;
 
-  const yaw = useRef(0)
-  const targetYaw = useRef(0)
+  lastSpoken = text;
+  lastSpeechTime = now;
 
-  const lastNavDirection = useRef<string | null>(null)
-  const lastCueTime = useRef(0)
-
-  const touchX = useRef<number | null>(null)
-  const playerPos = useRef(new THREE.Vector3(0, 1.6, 0))
-
-  const nodesRef = useRef<any[]>([])
-  const obstaclesRef = useRef<any[]>([])
-  const prevObstaclesRef = useRef<any[]>([])
-
-  const pathMaterials = useRef<any[]>([])
-
-  const markerConfidence = useRef(0)
-  const markerLocked = useRef(false)
-  const hasStarted = useRef(false)
-
-  useEffect(() => {
-    const handleTouchStart = (e: TouchEvent) => {
-      touchX.current = e.touches[0].clientX
-    }
-
-    const handleTouchMove = (e: TouchEvent) => {
-      if (touchX.current === null) return
-      const dx = e.touches[0].clientX - touchX.current
-      touchX.current = e.touches[0].clientX
-      targetYaw.current -= dx * TURN_SENSITIVITY
-    }
-
-    const handleTouchEnd = () => (touchX.current = null)
-
-    window.addEventListener('touchstart', handleTouchStart)
-    window.addEventListener('touchmove', handleTouchMove)
-    window.addEventListener('touchend', handleTouchEnd)
-
-    gl.setClearColor(0x000000, 0)
-
-    const unlockAudio = () => {
-      initAudio()
-      document.body.removeEventListener('touchstart', unlockAudio)
-    }
-    document.body.addEventListener('touchstart', unlockAudio, { passive: true })
-
-    return () => {
-      window.removeEventListener('touchstart', handleTouchStart)
-      window.removeEventListener('touchmove', handleTouchMove)
-      window.removeEventListener('touchend', handleTouchEnd)
-      stopNavigationTone()
-    }
-  }, [])
-
-  const stabilize = (value: number, prev: number) => {
-    const delta = value - prev
-    if (Math.abs(delta) < STABILITY_THRESHOLD) return prev
-    return prev + delta * 0.15
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
   }
+};
+
+// ── Pulsing red circle for detected obstacles ─────────────────────────────────
+const DangerZone = ({ position }: { position: THREE.Vector3 }) => {
+  const ref = useRef<THREE.Mesh>(null!);
+  useFrame((state) => {
+    const scale = 1 + Math.sin(state.clock.elapsedTime * 4) * 0.15;
+    ref.current.scale.set(scale, scale, scale);
+  });
+  return (
+    <mesh ref={ref} position={position} rotation={[-Math.PI / 2, 0, 0]}>
+      <circleGeometry args={[0.8, 32]} />
+      <meshBasicMaterial color="red" transparent opacity={0.3} />
+    </mesh>
+  );
+};
+
+// ── Glowing path (safe = cyan, danger = red) ───────────────────────────────────
+const GlowingPath = ({ position, isDanger }: { position: THREE.Vector3; isDanger: boolean }) => {
+  const ref = useRef<THREE.Mesh>(null!);
 
   useFrame((state) => {
-    const delta = state.clock.getDelta()
+    if (ref.current) {
+      const mat = ref.current.material as THREE.ShaderMaterial;
+      mat.uniforms.uTime.value = state.clock.elapsedTime;
+      mat.uniforms.uColor.value = isDanger
+        ? new THREE.Color(0xff0000)
+        : new THREE.Color(0x00ffff);
+    }
+  });
 
-    const yawDiff = targetYaw.current - yaw.current
-    const clamped = THREE.MathUtils.clamp(yawDiff, -MAX_YAW_STEP, MAX_YAW_STEP)
-    yaw.current += clamped * 0.8
-    camera.rotation.set(0, yaw.current, 0)
+  return (
+    <mesh ref={ref} position={position} rotation={[-Math.PI / 2, 0, 0]}>
+      <planeGeometry args={[0.6, 0.6]} />
+      <shaderMaterial
+        args={[PathShader]}
+        transparent
+        blending={THREE.AdditiveBlending}
+        depthWrite={false}
+      />
+    </mesh>
+  );
+};
 
-    const forward = new THREE.Vector3(
-      Math.sin(yaw.current),
-      0,
-      -Math.cos(yaw.current)
-    )
+// ── Scene ─────────────────────────────────────────────────────────────────────
+interface SceneProps {
+  getObstacles: () => { x: number; z: number; label: number }[];
+  checkScanTarget: (type: ScanType) => boolean;
+  scanType: ScanType;
+  riddleOpen: boolean;
+  ready: boolean;
+  scanProgressRef: React.MutableRefObject<number>;
+  onFound: () => void;
+  setStatus: (s: 'scanning' | 'active' | 'warning') => void;
+}
 
-    const raw = getObstacles() || []
+const Scene = ({
+  getObstacles,
+  checkScanTarget,
+  scanType,
+  riddleOpen,
+  ready,
+  scanProgressRef,
+  onFound,
+  setStatus
+}: SceneProps) => {
+  const { camera, gl } = useThree();
 
-    obstaclesRef.current = raw.map((o, i) => {
-      const prev = prevObstaclesRef.current[i]
+  const deviceRot = useRef(new THREE.Euler());
+  const [obstacles, setObstacles] = useState<THREE.Vector3[]>([]);
+  const lastObstacleScan = useRef(0);
+  const lastScanCheck = useRef(0);
+  const foundRef = useRef(false);
 
-      const stableX = prev ? stabilize(o.x, prev.x) : o.x
-      const stableZ = prev ? stabilize(o.z, prev.z) : o.z
+  const nodesRef = useRef<{ pos: THREE.Vector3; isDanger: boolean }[]>([]);
 
-      const local = new THREE.Vector3(stableX, 0, stableZ)
+  useEffect(() => {
+    foundRef.current = false;
+    scanProgressRef.current = 0;
+  }, [scanType, scanProgressRef]);
 
-      return {
-        pos: local
-          .applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw.current)
-          .add(playerPos.current),
-        label: o.label,
-        x: stableX,
-        z: stableZ
+  useEffect(() => {
+    const handleOrientation = (e: DeviceOrientationEvent) => {
+      if (e.alpha !== null && e.beta !== null && e.gamma !== null) {
+        deviceRot.current.set(
+          THREE.MathUtils.degToRad(e.beta),
+          THREE.MathUtils.degToRad(e.alpha),
+          -THREE.MathUtils.degToRad(e.gamma),
+          'YXZ'
+        );
       }
-    })
+    };
 
-    prevObstaclesRef.current = obstaclesRef.current
+    window.addEventListener('deviceorientation', handleOrientation);
+    gl.setClearColor(0x000000, 0);
 
-    if (setGridObstacles) {
-      setGridObstacles(
-        obstaclesRef.current.map(o => ({
-          x: o.x,
-          z: o.z
-        }))
-      )
+    const unlock = () => initAudio();
+    window.addEventListener('click', unlock, { once: true });
+
+    return () => window.removeEventListener('deviceorientation', handleOrientation);
+  }, [gl]);
+
+  useFrame(() => {
+    camera.quaternion.setFromEuler(deviceRot.current);
+    camera.position.set(0, 1.6, 0);
+
+    const now = performance.now();
+
+    // Faster obstacle updates
+    if (now - lastObstacleScan.current > 200) {
+      lastObstacleScan.current = now;
+      const raw = getObstacles();
+      setObstacles(raw.map(o => new THREE.Vector3(o.x, 0, o.z)));
     }
 
-    const zones = getObstacleZones()
+    // 🔥 DIRECT obstacle detection (FIXED)
+    const closeObstacle = obstacles.find(o => o.z > -2 && o.z < -0.3);
 
-    let bias = (zones.right - zones.left)
-    const centerWeight = zones.center * 1.5
+    if (closeObstacle) {
+      const side =
+        closeObstacle.x < -0.3 ? 'left' :
+        closeObstacle.x > 0.3 ? 'right' :
+        'ahead';
 
-    let steerStrength = bias - centerWeight * Math.sign(bias || 1)
-
-    if (zones.center > 3) {
-      steerStrength += (zones.left < zones.right ? -1 : 1) * 1.5
+      speak(`Obstacle ${side}`, true);
     }
 
-    steerStrength = THREE.MathUtils.clamp(steerStrength * 0.015, -0.05, 0.05)
-    targetYaw.current += steerStrength
+    // Path + danger detection (FIXED LOGIC)
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    forward.y = 0;
+    if (forward.length() > 0) forward.normalize();
 
-    let navDirection: 'left' | 'right' | 'forward' = 'forward'
-    if (steerStrength < -0.01) navDirection = 'left'
-    else if (steerStrength > 0.01) navDirection = 'right'
+    let pathPos = new THREE.Vector3(0, 0, -1);
+    const newNodes: { pos: THREE.Vector3; isDanger: boolean }[] = [];
+    let pathIsDanger = false;
 
-    const dangerAhead = zones.center > 1
-    const speed = dangerAhead ? 0.02 : BASE_SPEED
+    for (let i = 0; i < 12; i++) {
+      const isDanger = obstacles.some(o => {
+        return Math.abs(o.z - pathPos.z) < 1.2 && Math.abs(o.x - pathPos.x) < 1.2;
+      });
 
-    playerPos.current.add(forward.clone().multiplyScalar(speed))
-    camera.position.copy(playerPos.current)
+      if (isDanger && i < 3) pathIsDanger = true;
 
-    if (navDirection !== lastNavDirection.current) {
-      startNavigationTone(navDirection)
-      lastNavDirection.current = navDirection
+      newNodes.push({
+        pos: pathPos.clone(),
+        isDanger,
+      });
+
+      pathPos.add(forward.clone().multiplyScalar(0.8));
     }
 
-    if (state.clock.elapsedTime - lastCueTime.current > 2) {
-      playNavigationCue(navDirection)
-      lastCueTime.current = state.clock.elapsedTime
-    }
+    nodesRef.current = newNodes;
 
-    if (dangerAhead && state.clock.elapsedTime % 1.5 < 0.02) {
-      const closest = obstaclesRef.current[0]
-      if (closest) {
-        playSpatialAlert(closest.pos, 0.3, true)
-      }
-    }
-
-    const nodes = []
-    for (let i = 1; i <= 10; i++) {
-      const pos = playerPos.current.clone().add(
-        forward.clone().multiplyScalar(i * 0.8)
-      )
-
-      const isDanger = obstaclesRef.current.some(o =>
-        o.pos.distanceTo(pos) < 1.2
-      )
-
-      nodes.push({ pos, isDanger })
-    }
-    nodesRef.current = nodes
-
-    pathMaterials.current.forEach((mat) => {
-      if (mat) mat.uniforms.uTime.value = state.clock.elapsedTime
-    })
-
-    setStatus(!ready ? 'scanning' : dangerAhead ? 'warning' : 'active')
-
-    const detected = scanMarker()
-
-    if (detected) {
-      hasStarted.current = true
-      markerConfidence.current += delta * 2
+    // Status update
+    if (!ready) {
+      setStatus('scanning');
+    } else if (pathIsDanger) {
+      setStatus('warning');
     } else {
-      markerConfidence.current -= delta * 3
+      setStatus('active');
     }
 
-    markerConfidence.current = THREE.MathUtils.clamp(markerConfidence.current, 0, 1)
+    // Scan logic (UNCHANGED)
+    if (!riddleOpen && !foundRef.current && ready && now - lastScanCheck.current > 500) {
+      lastScanCheck.current = now;
 
-    if (markerConfidence.current > 0.8) {
-      markerLocked.current = true
+      const detected = checkScanTarget(scanType);
+
+      if (detected) {
+        scanProgressRef.current = Math.min(1, scanProgressRef.current + 0.38);
+      } else {
+        scanProgressRef.current = Math.max(0, scanProgressRef.current - 0.22);
+      }
+
+      if (scanProgressRef.current >= 1) {
+        foundRef.current = true;
+        onFound();
+      }
     }
-
-    const target = ESCAPE_GAME.puzzles[currentPuzzleIdx]
-    const targetVec = new THREE.Vector3(target.targetPos.x, 0, target.targetPos.z)
-
-    const distance = playerPos.current.distanceTo(targetVec)
-
-    if (
-      hasStarted.current &&
-      distance < 1.2 &&
-      markerLocked.current &&
-      markerConfidence.current > 0.9
-    ) {
-      playSpatialAlert(new THREE.Vector3(0, 0, -1), 0.5, false)
-      setRiddlePanel(true)
-
-      markerLocked.current = false
-      markerConfidence.current = 0
-    }
-  })
-
-  const showMarkerVisual = markerConfidence.current > 0.6
+  });
 
   return (
     <>
       <ambientLight intensity={1.5} />
 
-      {/* 🔥 ENHANCED AR GRID */}
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[
-          camera.position.x,
-          camera.position.y - 1.4,
-          camera.position.z - 2.5
-        ]}
-      >
-        <planeGeometry args={[8, 8]} />
-        <shaderMaterial args={[FloorShader]} transparent />
-      </mesh>
+      {obstacles.map((pos, i) => (
+        <DangerZone key={i} position={pos} />
+      ))}
 
-      {/* 🔥 MARKER LOCK VISUAL */}
-      {showMarkerVisual && (
-        <mesh position={[
-          camera.position.x,
-          camera.position.y,
-          camera.position.z - 1.5
-        ]}>
-          <ringGeometry args={[0.2, 0.25, 32]} />
-          <meshBasicMaterial color="cyan" transparent opacity={0.8} />
-        </mesh>
-      )}
-
-      {nodesRef.current.map((n, i) => {
-        const material = new THREE.ShaderMaterial({
-          ...PathShader,
-          uniforms: {
-            ...PathShader.uniforms,
-            uColor: { value: new THREE.Color(n.isDanger ? 0xff4444 : 0x00ffff) }
-          },
-          transparent: true
-        })
-
-        pathMaterials.current[i] = material
-
-        return (
-          <group key={i}>
-            <mesh position={n.pos} rotation={[-Math.PI / 2, 0, 0]}>
-              <planeGeometry args={[0.6, 0.6]} />
-              <primitive object={material} attach="material" />
-            </mesh>
-
-            <mesh position={[n.pos.x, n.pos.y + 0.3, n.pos.z]}>
-              <cylinderGeometry args={[0.05, 0.05, 0.5]} />
-              <meshBasicMaterial 
-                color={n.isDanger ? 'red' : 'cyan'} 
-                transparent 
-                opacity={0.8} 
-              />
-            </mesh>
-          </group>
-        )
-      })}
+      {nodesRef.current.map((n, i) => (
+        <GlowingPath key={i} position={n.pos} isDanger={n.isDanger} />
+      ))}
     </>
-  )
-}
+  );
+};
 
-export default function ARScene({ setStatus, setGridObstacles }: any) {
-  const [currentPuzzleIdx, setCurrentPuzzleIdx] = useState(0)
-  const [riddlePanel, setRiddlePanel] = useState(false)
+// ── Scan reticle ──────────────────────────────────────────────────────────────
+const ScanReticle = ({ progress }: { progress: number }) => {
+  const radius = 46;
+  const circ = 2 * Math.PI * radius;
+  const offset = circ * (1 - progress);
+
+  const color =
+    progress > 0.7 ? '#00ff88' :
+    progress > 0.05 ? '#00e5ff' :
+    'rgba(255,255,255,0.55)';
 
   return (
-    <div style={{ width: '100vw', height: '100vh' }}>
-      {riddlePanel && (
-        <PuzzleUI
-          puzzle={ESCAPE_GAME.puzzles[currentPuzzleIdx]}
-          onSolve={() => {
-            setRiddlePanel(false)
-            setCurrentPuzzleIdx(p => p + 1)
-          }}
+    <div style={{
+      position: 'absolute',
+      top: '50%',
+      left: '50%',
+      transform: 'translate(-50%, -50%)',
+      pointerEvents: 'none',
+      zIndex: 500,
+    }}>
+      <svg width="130" height="130" viewBox="0 0 130 130">
+        <circle cx="65" cy="65" r={radius} fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth="2" />
+        <circle
+          cx="65" cy="65" r={radius}
+          fill="none"
+          stroke={color}
+          strokeWidth="4"
+          strokeDasharray={circ}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          transform="rotate(-90 65 65)"
         />
-      )}
+      </svg>
+    </div>
+  );
+};
 
-      <Canvas camera={{ position: [0, 1.6, 0], fov: 75 }} gl={{ alpha: true }}>
+// ── Flash ─────────────────────────────────────────────────────────────────────
+const FoundFlash = () => (
+  <div style={{
+    position: 'absolute',
+    inset: 0,
+    zIndex: 1000,
+    background: 'rgba(0,255,136,0.25)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
+  }}>
+    <div style={{ color: '#00ff88', fontWeight: 900 }}>
+      TARGET ACQUIRED
+    </div>
+  </div>
+);
+
+// ── Main component ────────────────────────────────────────────────────────────
+interface ARSceneProps {
+  puzzleIdx: number;
+  onPuzzleSolved: () => void;
+  setStatus: (s: 'scanning' | 'active' | 'warning') => void;
+}
+
+export default function ARScene({ puzzleIdx, onPuzzleSolved, setStatus }: ARSceneProps) {
+  const { ready, getObstacles, checkScanTarget } = useVision();
+
+  const [displayProgress, setDisplayProgress] = useState(0);
+  const [riddleOpen, setRiddleOpen] = useState(false);
+  const [foundFlash, setFoundFlash] = useState(false);
+
+  const scanProgressRef = useRef(0);
+  const puzzle = PUZZLES[puzzleIdx];
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setDisplayProgress(scanProgressRef.current);
+    }, 100);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    setRiddleOpen(false);
+    setFoundFlash(false);
+    setDisplayProgress(0);
+    scanProgressRef.current = 0;
+  }, [puzzleIdx]);
+
+  useEffect(() => {
+    if (!ready) setStatus('scanning');
+    else if (displayProgress > 0.15) setStatus('warning');
+    else setStatus('active');
+  }, [ready, displayProgress, setStatus]);
+
+  const handleFound = useCallback(() => {
+    setFoundFlash(true);
+
+    setTimeout(() => {
+      setFoundFlash(false);
+      setRiddleOpen(true);
+    }, 900);
+  }, []);
+
+  const handleSolve = useCallback(() => {
+    setRiddleOpen(false);
+    onPuzzleSolved();
+  }, [onPuzzleSolved]);
+
+  return (
+    <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
+      {foundFlash && <FoundFlash />}
+
+      <Canvas
+        camera={{ fov: 75, position: [0, 1.6, 0] }}
+        gl={{ alpha: true }}
+        style={{ position: 'absolute', inset: 0 }}
+      >
         <Scene
+          getObstacles={getObstacles}
+          checkScanTarget={checkScanTarget}
+          scanType={puzzle.scanType}
+          riddleOpen={riddleOpen}
+          ready={ready}
+          scanProgressRef={scanProgressRef}
+          onFound={handleFound}
           setStatus={setStatus}
-          setRiddlePanel={setRiddlePanel}
-          currentPuzzleIdx={currentPuzzleIdx}
-          setGridObstacles={setGridObstacles}
         />
       </Canvas>
+
+      {!riddleOpen && !foundFlash && (
+        <ScanReticle progress={displayProgress} />
+      )}
+
+      {riddleOpen && (
+        <PuzzleUI puzzle={puzzle} onSolve={handleSolve} />
+      )}
     </div>
-  )
+  );
 }

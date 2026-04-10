@@ -1,130 +1,152 @@
 import React from 'react';
-import { Eye, MapPin, AlertTriangle, CheckCircle2, Loader2, Trophy } from 'lucide-react';
-import { CenterGrid } from './CenterGrid'; // 🔥 UPDATED
+import { Puzzle } from '../hooks/EscapeLogic';
 
 interface OverlayProps {
   status: 'scanning' | 'active' | 'warning';
-  gridObstacles: { x: number; z: number }[];
+  puzzle: Puzzle;
+  totalPuzzles: number;
 }
 
-const Overlay: React.FC<OverlayProps> = ({ status, gridObstacles }) => {
-  const getColorScheme = () => {
-    switch (status) {
-      case 'active':
-        return {
-          text: 'text-cyan-400',
-          border: 'border-cyan-500/50',
-          bg: 'bg-cyan-500/20',
-          icon: <Trophy className="text-cyan-400" size={24} />
-        };
-      case 'warning':
-        return {
-          text: 'text-red-500',
-          border: 'border-red-600',
-          bg: 'bg-red-600/30',
-          icon: <AlertTriangle className="text-red-500 animate-bounce" size={24} />
-        };
-      default:
-        return {
-          text: 'text-gray-400',
-          border: 'border-gray-500/50',
-          bg: 'bg-gray-500/20',
-          icon: <Loader2 className="text-gray-400 animate-spin" size={24} />
-        };
-    }
-  };
+const Overlay: React.FC<OverlayProps> = ({ status, puzzle, totalPuzzles }) => {
+  const puzzleNum = puzzle.id;
 
-  const scheme = getColorScheme();
-
-  const getDirectionIndicator = () => {
-    if (status === 'warning') return "⚠️"
-    if (status === 'active') return "⬆️"
-    return "⏳"
-  }
-
-  const getDirectionLabel = () => {
-    if (status === 'warning') return "Adjust Direction"
-    if (status === 'active') return "Move Forward"
-    return "Scanning"
-  }
-
-  const getAssistiveHint = () => {
-    if (status === 'warning') return "Obstacle ahead. Adjust direction."
-    if (status === 'active') return "Move forward. Stay centered."
-    return "Initializing vision system..."
-  }
+  const statusColor =
+    status === 'warning' ? '#ff4444' : status === 'active' ? '#00e5ff' : '#888';
+  const statusLabel =
+    status === 'warning' ? 'DETECTING' : status === 'active' ? 'SCANNING' : 'CALIBRATING';
 
   return (
-    <div className="fixed inset-0 pointer-events-none flex flex-col justify-between p-6 z-[100]">
-      
-      {/* 🔝 HEADER */}
-      <div className="flex justify-between items-center pointer-events-auto">
-        <div className={`bg-black/80 backdrop-blur-md border-2 p-3 rounded-xl flex items-center gap-3 ${scheme.border} ${scheme.text}`}>
-          <Eye size={28} />
-          <h1 className="text-white font-bold text-xl tracking-tighter">
-            SPATIAL <span className="text-cyan-400">ESCAPE</span>
-          </h1>
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        pointerEvents: 'none',
+        zIndex: 100,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+        padding: '16px',
+        fontFamily: 'monospace',
+      }}
+    >
+      {/* ── Top bar ───────────────────────────────── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        {/* Title */}
+        <div
+          style={{
+            background: 'rgba(0,0,0,0.75)',
+            border: `1.5px solid ${statusColor}`,
+            borderRadius: '10px',
+            padding: '8px 14px',
+            backdropFilter: 'blur(8px)',
+          }}
+        >
+          <span style={{ color: '#fff', fontWeight: 700, fontSize: '1rem', letterSpacing: '0.08em' }}>
+            SPATIAL{' '}
+          </span>
+          <span style={{ color: '#00e5ff', fontWeight: 700, fontSize: '1rem', letterSpacing: '0.08em' }}>
+            ESCAPE
+          </span>
         </div>
 
-        <div className={`bg-black/80 border-2 px-4 py-2 rounded-xl text-xl font-bold ${scheme.border} ${scheme.text}`}>
-          {getDirectionIndicator()}
+        {/* Status pill */}
+        <div
+          style={{
+            background: 'rgba(0,0,0,0.75)',
+            border: `1.5px solid ${statusColor}`,
+            borderRadius: '20px',
+            padding: '6px 12px',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+        >
+          <div
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: statusColor,
+              boxShadow: `0 0 6px ${statusColor}`,
+            }}
+          />
+          <span style={{ color: statusColor, fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.12em' }}>
+            {statusLabel}
+          </span>
         </div>
       </div>
 
-      {/* 🔥 UPDATED: CENTER TOP-VIEW GRID (REPLACES RADAR) */}
-      <CenterGrid obstacles={gridObstacles || []} />
-
-      {/* 🔥 CENTER GUIDANCE */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <div className="relative flex items-center justify-center">
-
-          <div className={`w-40 h-40 rounded-full border-2 opacity-20 ${scheme.border}`} />
-          <div className={`absolute w-20 h-20 rounded-full border ${scheme.border} opacity-40`} />
-          <div className={`absolute w-3 h-3 rounded-full ${status === 'warning' ? 'bg-red-500' : 'bg-cyan-400'}`} />
-
-        </div>
+      {/* ── Progress dots ──────────────────────────── */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '10px' }}>
+        {Array.from({ length: totalPuzzles }).map((_, i) => (
+          <div
+            key={i}
+            style={{
+              width: i < puzzleNum - 1 ? 12 : 10,
+              height: i < puzzleNum - 1 ? 12 : 10,
+              borderRadius: '50%',
+              background:
+                i < puzzleNum - 1
+                  ? '#00ff88'
+                  : i === puzzleNum - 1
+                  ? '#00e5ff'
+                  : 'rgba(255,255,255,0.2)',
+              border:
+                i === puzzleNum - 1 ? '2px solid #00e5ff' : '2px solid transparent',
+              boxShadow:
+                i < puzzleNum - 1
+                  ? '0 0 6px #00ff88'
+                  : i === puzzleNum - 1
+                  ? '0 0 10px #00e5ff'
+                  : 'none',
+              transition: 'all 0.4s',
+            }}
+          />
+        ))}
       </div>
 
-      {/* 🔽 MAIN PANEL */}
-      <div className="flex flex-col gap-4 items-center">
-        <div className={`bg-black/90 backdrop-blur-lg border-t-4 p-6 rounded-2xl w-full max-w-sm pointer-events-auto shadow-2xl transition-all duration-300 ${scheme.border} ${status === 'warning' ? 'animate-pulse' : ''}`}>
-          
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <MapPin className="text-gray-500" size={16} />
-              <span className="text-gray-500 text-[10px] font-black uppercase tracking-widest">
-                Mission Objective
-              </span>
-            </div>
-          </div>
+      {/* ── Bottom info card ────────────────────────── */}
+      <div
+        style={{
+          background: 'rgba(0,0,0,0.85)',
+          border: '1.5px solid rgba(0,229,255,0.35)',
+          borderRadius: '16px',
+          padding: '16px 18px',
+          backdropFilter: 'blur(12px)',
+        }}
+      >
+        {/* Chapter label */}
+        <div style={{ color: 'rgba(0,229,255,0.6)', fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.18em', marginBottom: 6 }}>
+          {puzzle.chapter.toUpperCase()}
+        </div>
 
-          <div className="flex items-start gap-4">
-            <div className={`p-2 rounded-lg ${scheme.bg}`}>
-              {scheme.icon}
-            </div>
+        {/* Puzzle name */}
+        <div style={{ color: '#fff', fontWeight: 700, fontSize: '1.05rem', marginBottom: 6, letterSpacing: '0.04em' }}>
+          {puzzle.name}
+        </div>
 
-            <div>
-              <p className="text-white text-lg font-bold leading-tight mb-1">
-                {status === 'scanning' && "Calibrating..."}
-                {status === 'active' && "Find the Fragment"}
-                {status === 'warning' && "Collision Imminent"}
-              </p>
+        {/* Hint */}
+        <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.8rem', marginBottom: 10, fontStyle: 'italic' }}>
+          "{puzzle.hint}"
+        </div>
 
-              <p className="text-gray-400 text-sm leading-snug">
-                {status === 'scanning' && "Scanning environment for spatial nodes."}
-                {status === 'active' && "Avoid hazards. Search for the keys that open no locks."}
-                {status === 'warning' && "Object detected in flight path. Reroute immediately."}
-              </p>
-
-              <p className="mt-2 text-sm text-white font-semibold">
-                {getDirectionLabel()}
-              </p>
-
-              <p className="mt-2 text-xs text-cyan-300 font-medium">
-                {getAssistiveHint()}
-              </p>
-            </div>
-          </div>
+        {/* Scan instruction box */}
+        <div
+          style={{
+            background: 'rgba(0,229,255,0.08)',
+            border: '1px solid rgba(0,229,255,0.25)',
+            borderRadius: '8px',
+            padding: '8px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+          }}
+        >
+          <span style={{ fontSize: '1rem' }}>📷</span>
+          <span style={{ color: '#00e5ff', fontSize: '0.78rem', fontWeight: 600 }}>
+            {puzzle.scanInstruction}
+          </span>
         </div>
       </div>
     </div>
