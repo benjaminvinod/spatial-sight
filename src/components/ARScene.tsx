@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useVision, PathSample, MaskData } from '../hooks/useVision';
-import { initAudio } from '../hooks/SpatialAudio';
+import { initAudio, playSpatialAlert, playScanProgressTone, updateListenerOrientation } from '../hooks/SpatialAudio';
 import { PUZZLES, ScanType } from '../hooks/EscapeLogic';
 import { PuzzleUI } from './PuzzleUI';
 
@@ -45,9 +45,15 @@ const Scene = ({ getObstacles, checkScanTarget, scanType, riddleOpen, ready, sca
   const lastScanCheck = useRef(0);
   const foundRef = useRef(false);
 
+  // Per-obstacle audio cooldown map: key = "x_z", value = last alert timestamp
+  const lastObstacleAlert = useRef<Map<string, number>>(new Map());
+  // Scan progress: track last progress value to detect 50% crossing
+  const lastScanProgressRef = useRef(0);
+
   useEffect(() => {
     foundRef.current = false;
     scanProgressRef.current = 0;
+    lastScanProgressRef.current = 0;
   }, [scanType, scanProgressRef]);
 
   useEffect(() => {
@@ -63,7 +69,9 @@ const Scene = ({ getObstacles, checkScanTarget, scanType, riddleOpen, ready, sca
     };
     window.addEventListener('deviceorientation', handleOrientation);
     gl.setClearColor(0x000000, 0);
+    // Unlock AudioContext on first click or touch (iOS safety net)
     window.addEventListener('click', initAudio, { once: true });
+    window.addEventListener('touchstart', initAudio, { once: true });
     return () => window.removeEventListener('deviceorientation', handleOrientation);
   }, [gl]);
 
@@ -72,18 +80,46 @@ const Scene = ({ getObstacles, checkScanTarget, scanType, riddleOpen, ready, sca
     camera.position.set(0, 1.6, 0);
     const now = performance.now();
 
+    // Sync AudioListener orientation to camera every frame
+    updateListenerOrientation(camera);
+
     if (now - lastObstacleScan.current > 1500) {
       lastObstacleScan.current = now;
-      setObstacles(getObstacles().map(o => ({ x: o.x, z: o.z })));
+      const newObstacles = getObstacles().map(o => ({ x: o.x, z: o.z }));
+      setObstacles(newObstacles);
+
+      // Trigger spatial alert for nearby obstacles (within 2.5 units of camera)
+      for (const obs of newObstacles) {
+        const obsPos = new THREE.Vector3(obs.x, 0, obs.z);
+        const dist = obsPos.length(); // camera is always at origin in this coordinate frame
+        if (dist < 2.5) {
+          const key = `${Math.round(obs.x)}_${Math.round(obs.z)}`;
+          const lastFired = lastObstacleAlert.current.get(key) ?? 0;
+          if (now - lastFired > 800) {
+            lastObstacleAlert.current.set(key, now);
+            playSpatialAlert(obsPos, 0.3, true);
+          }
+        }
+      }
     }
 
     if (!riddleOpen && !foundRef.current && ready && now - lastScanCheck.current > 500) {
       lastScanCheck.current = now;
+      const prevProgress = scanProgressRef.current;
+
       if (checkScanTarget(scanType)) {
         scanProgressRef.current = Math.min(1, scanProgressRef.current + 0.38);
       } else {
         scanProgressRef.current = Math.max(0, scanProgressRef.current - 0.22);
       }
+
+      // Scan progress feedback: play rising tone at 50% crossing
+      if (prevProgress < 0.5 && scanProgressRef.current >= 0.5) {
+        playScanProgressTone(0.5);
+      }
+
+      lastScanProgressRef.current = scanProgressRef.current;
+
       if (scanProgressRef.current >= 1) {
         foundRef.current = true;
         onFound();
@@ -341,6 +377,8 @@ export default function ARScene({ puzzleIdx, onPuzzleSolved, setStatus, accessMo
   }, [ready, displayProgress, setStatus]);
 
   const handleFound = useCallback(() => {
+    // Target acquired confirmation tone — front-center, positive sine wave
+    playSpatialAlert(new THREE.Vector3(0, 1.6, -1), 0.6, false);
     setFoundFlash(true);
     if ('vibrate' in navigator) navigator.vibrate([80, 40, 180, 40, 80]);
     setTimeout(() => { setFoundFlash(false); setRiddleOpen(true); }, 900);
